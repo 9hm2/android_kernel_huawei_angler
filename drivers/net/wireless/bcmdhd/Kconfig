@@ -68,3 +68,22 @@ config DHD_OF_SUPPORT
 	bool "Use in-drive platform device"
 	depends on BCMDHD
 	default n
+
+config BCMDHD_MONITOR_MODE
+	bool "Native 802.11 monitor mode and frame injection"
+	depends on BCMDHD && CFG80211
+	default n
+	---help---
+	  Enable native cfg80211/nl80211 monitor mode support for the
+	  Broadcom FullMAC driver. This exposes a standard monitor
+	  interface (created via "iw"/airmon-ng) instead of requiring the
+	  nexmon userspace wrapper. Received 802.11 frames are delivered
+	  with a radiotap header, and raw frames written to the monitor
+	  interface (e.g. by aireplay-ng) are injected for all frame types.
+
+	  The completeness of monitor RX and frame injection ultimately
+	  depends on the capabilities of the loaded firmware: stock
+	  firmware offers partial support, while a monitor/injection
+	  capable (e.g. nexmon-patched) firmware enables full operation.
+
+	  Say N if unsure.

@@ -51,6 +51,11 @@
 #include <linux/reboot.h>
 #include <linux/notifier.h>
 #include <net/addrconf.h>
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+#include <linux/if_arp.h>
+#include <linux/ieee80211.h>
+#include <net/ieee80211_radiotap.h>
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 #ifdef ENABLE_ADAPTIVE_SCHED
 #include <linux/cpufreq.h>
 #endif /* ENABLE_ADAPTIVE_SCHED */
@@ -2802,6 +2807,88 @@ dhd_is_rxthread_enabled(dhd_pub_t *dhdp)
 }
 #endif /* DHD_WMF */
 
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+/*
+ * Deliver a received frame to the monitor interface when the firmware is in
+ * monitor mode. The raw 802.11 frame is prefixed with a minimal radiotap
+ * header so that standard tooling (libpcap, airodump-ng) can consume it on the
+ * ARPHRD_IEEE80211_RADIOTAP interface created by dhd_add_monitor().
+ *
+ * Returns 0 if the packet was consumed (delivered or dropped) by the monitor
+ * path, or a negative value if the caller should fall back to normal RX
+ * processing (e.g. for in-band Broadcom event frames).
+ *
+ * Note: the FullMAC firmware does not expose per-frame PHY metadata on this
+ * path, so the radiotap header is emitted with no presence fields. A
+ * monitor/injection-capable firmware that prepends its own PHY status could be
+ * parsed here to populate channel/rate/RSSI.
+ */
+static int
+dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
+{
+	struct net_device *mon_ndev;
+	struct ieee80211_radiotap_header *rtap;
+	struct ether_header *eh;
+
+	if (!ifp || !ifp->net)
+		return -1;
+
+	/* Firmware events arrive on the in-band Broadcom ethertype; leave those
+	 * for the normal event handler rather than pushing them to userspace as
+	 * bogus 802.11 frames.
+	 */
+	if (skb->len >= ETHER_HDR_LEN) {
+		eh = (struct ether_header *)skb->data;
+		if (ntoh16(eh->ether_type) == ETHER_TYPE_BRCM)
+			return -1;
+	}
+
+	mon_ndev = dhd_mon_lookup_dev(ifp->net);
+	if (!mon_ndev) {
+		/* No dedicated shadow device: the real interface itself may have
+		 * been switched to monitor type (e.g. "iw dev wlanX set type
+		 * monitor"), in which case deliver the radiotap frame on it.
+		 */
+		if (ifp->net->type == ARPHRD_IEEE80211_RADIOTAP)
+			mon_ndev = ifp->net;
+		else
+			return -1;
+	}
+
+	/* Make room for and prepend the radiotap header. */
+	if (skb_headroom(skb) < (int)sizeof(*rtap)) {
+		struct sk_buff *nskb = skb_realloc_headroom(skb, sizeof(*rtap));
+		if (!nskb) {
+			dev_kfree_skb_any(skb);
+			return 0;
+		}
+		dev_kfree_skb_any(skb);
+		skb = nskb;
+	}
+
+	rtap = (struct ieee80211_radiotap_header *)skb_push(skb, sizeof(*rtap));
+	memset(rtap, 0, sizeof(*rtap));
+	rtap->it_version = 0;
+	rtap->it_pad = 0;
+	rtap->it_len = cpu_to_le16(sizeof(*rtap));
+	rtap->it_present = 0;
+
+	skb->dev = mon_ndev;
+	skb->protocol = htons(ETH_P_802_2);
+	skb->pkt_type = PACKET_OTHERHOST;
+	skb_reset_mac_header(skb);
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
+	mon_ndev->last_rx = jiffies;
+
+	if (in_interrupt())
+		netif_rx(skb);
+	else
+		netif_rx_ni(skb);
+
+	return 0;
+}
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
+
 void
 dhd_rx_frame(dhd_pub_t *dhdp, int ifidx, void *pktbuf, int numpkt, uint8 chan,
 	     int pkt_wake, wake_counts_t *wcp)
@@ -2925,6 +3012,18 @@ dhd_rx_frame(dhd_pub_t *dhdp, int ifidx, void *pktbuf, int numpkt, uint8 chan,
 			}
 		}
 #endif /* PCIE_FULL_DONGLE */
+
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+		/* When the firmware is in monitor mode, divert received 802.11
+		 * frames to the monitor interface with a radiotap header instead
+		 * of treating them as 802.3 frames. Broadcom event frames fall
+		 * through to the normal handler.
+		 */
+		if (dhdp->monitor_type) {
+			if (dhd_rx_mon_pkt(dhdp, ifp, skb) == 0)
+				continue;
+		}
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 		/* Get the protocol, maintain skb around eth_type_trans()
 		 * The main reason for this hack is for the limitation of
@@ -8608,6 +8707,34 @@ void * dhd_dev_process_anqpo_result(struct net_device *dev,
 }
 #endif /* DHD_ANQPO_SUPPORT */
 #endif /* GSCAN_SUPPORT */
+
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+int dhd_set_monitor(dhd_pub_t *dhdp, int ifidx, int val)
+{
+	int ret;
+	int monitor = htod32(val);
+
+	DHD_TRACE(("%s: ifidx %d val %d\n", __FUNCTION__, ifidx, val));
+
+	ret = dhd_wl_ioctl_cmd(dhdp, WLC_SET_MONITOR, &monitor, sizeof(monitor),
+		TRUE, ifidx);
+	if (ret < 0) {
+		DHD_ERROR(("%s: WLC_SET_MONITOR (%d) failed: %d\n",
+			__FUNCTION__, val, ret));
+		return ret;
+	}
+
+	/* Only update the cached state once the firmware accepted the request,
+	 * so the RX path does not start re-tagging frames as radiotap when the
+	 * firmware is not actually in monitor mode.
+	 */
+	dhdp->monitor_type = val;
+	DHD_ERROR(("%s: monitor mode %s (type %d)\n", __FUNCTION__,
+		val ? "enabled" : "disabled", val));
+
+	return ret;
+}
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 int dhd_dev_set_rssi_monitor_cfg(struct net_device *dev, int start,
              int8 max_rssi, int8 min_rssi)

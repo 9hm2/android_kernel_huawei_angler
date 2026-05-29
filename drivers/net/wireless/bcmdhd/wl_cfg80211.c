@@ -1319,9 +1319,34 @@ static chanspec_t wl_cfg80211_get_shared_freq(struct wiphy *wiphy)
 }
 
 static bcm_struct_cfgdev *
-wl_cfg80211_add_monitor_if(char *name)
+wl_cfg80211_add_monitor_if(struct bcm_cfg80211 *cfg, char *name)
 {
-#if defined(WL_ENABLE_P2P_IF) || defined(WL_CFG80211_P2P_DEV_IF)
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	struct net_device *ndev = NULL;
+	dhd_pub_t *dhd = (dhd_pub_t *)(cfg->pub);
+	int err;
+
+	/* Create the radiotap monitor net device that shadows the primary
+	 * interface, then put the firmware into monitor mode. The order matters:
+	 * the RX path only diverts frames to the monitor device once both the
+	 * device exists and dhd->monitor_type is set.
+	 */
+	err = dhd_add_monitor(name, &ndev);
+	if (err || !ndev) {
+		WL_ERR(("dhd_add_monitor failed (%d)\n", err));
+		return ERR_PTR(err ? err : -ENODEV);
+	}
+
+	err = dhd_set_monitor(dhd, 0, 1);
+	if (err < 0) {
+		WL_ERR(("failed to enable firmware monitor mode (%d)\n", err));
+		dhd_del_monitor(ndev);
+		return ERR_PTR(err);
+	}
+
+	WL_INFORM(("monitor interface %s created\n", name));
+	return ndev_to_cfgdev(ndev);
+#elif defined(WL_ENABLE_P2P_IF) || defined(WL_CFG80211_P2P_DEV_IF)
 	WL_INFORM(("wl_cfg80211_add_monitor_if: No more support monitor interface\n"));
 	return ERR_PTR(-EOPNOTSUPP);
 #else
@@ -1330,7 +1355,7 @@ wl_cfg80211_add_monitor_if(char *name)
 	dhd_add_monitor(name, &ndev);
 	WL_INFORM(("wl_cfg80211_add_monitor_if net device returned: 0x%p\n", ndev));
 	return ndev_to_cfgdev(ndev);
-#endif /* WL_ENABLE_P2P_IF || WL_CFG80211_P2P_DEV_IF */
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 }
 
 static bcm_struct_cfgdev *
@@ -1391,7 +1416,7 @@ wl_cfg80211_add_virtual_iface(struct wiphy *wiphy,
 		mode = WL_MODE_IBSS;
 		return NULL;
 	case NL80211_IFTYPE_MONITOR:
-		return wl_cfg80211_add_monitor_if((char *)name);
+		return wl_cfg80211_add_monitor_if(cfg, (char *)name);
 #if defined(WL_CFG80211_P2P_DEV_IF)
 	case NL80211_IFTYPE_P2P_DEVICE:
 		return wl_cfgp2p_add_p2p_disc_if(cfg);
@@ -1604,6 +1629,17 @@ wl_cfg80211_del_virtual_iface(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev)
 #endif /* WL_CFG80211_P2P_DEV_IF */
 	dev = cfgdev_to_wlc_ndev(cfgdev, cfg);
 
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	/* A native monitor interface is a stand-alone radiotap netdev rather
+	 * than a P2P/virtual BSS, so tear it down directly: disable firmware
+	 * monitor mode first, then unregister the shadow device.
+	 */
+	if (dev && dev->type == ARPHRD_IEEE80211_RADIOTAP) {
+		dhd_set_monitor((dhd_pub_t *)(cfg->pub), 0, 0);
+		return dhd_del_monitor(dev);
+	}
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
+
 	if (cfgdev == cfg->ibss_cfgdev)
 		return bcm_cfg80211_del_ibss_if(wiphy, cfgdev);
 
@@ -1715,8 +1751,39 @@ wl_cfg80211_change_virtual_iface(struct wiphy *wiphy, struct net_device *ndev,
 	dhd_pub_t *dhd = (dhd_pub_t *)(cfg->pub);
 
 	WL_DBG(("Enter type %d\n", type));
+
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	/* Leaving in-place monitor mode: turn the firmware monitor off and
+	 * restore the netdev to a normal Ethernet interface before applying the
+	 * requested type.
+	 */
+	if (dhd && dhd->monitor_type && type != NL80211_IFTYPE_MONITOR &&
+		ndev->type == ARPHRD_IEEE80211_RADIOTAP) {
+		dhd_set_monitor(dhd, 0, 0);
+		ndev->type = ARPHRD_ETHER;
+		wl_set_mode_by_netdev(cfg, ndev, WL_MODE_BSS);
+	}
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
+
 	switch (type) {
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
 	case NL80211_IFTYPE_MONITOR:
+		/* Switch the existing interface into monitor mode in place
+		 * ("iw dev wlanX set type monitor"). The netdev is retyped to
+		 * radiotap so the RX path delivers raw 802.11 frames on it.
+		 */
+		err = dhd_set_monitor(dhd, 0, 1);
+		if (err < 0) {
+			WL_ERR(("failed to enable monitor mode (%d)\n", err));
+			return err;
+		}
+		wl_set_mode_by_netdev(cfg, ndev, WL_MODE_MONITOR);
+		ndev->type = ARPHRD_IEEE80211_RADIOTAP;
+		ndev->ieee80211_ptr->iftype = type;
+		return 0;
+#else
+	case NL80211_IFTYPE_MONITOR:
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 	case NL80211_IFTYPE_WDS:
 	case NL80211_IFTYPE_MESH_POINT:
 		ap = 1;
@@ -11521,8 +11588,20 @@ static s32 wl_config_ifmode(struct bcm_cfg80211 *cfg, struct net_device *ndev, s
 	s32 err = 0;
 	s32 mode = 0;
 	switch (iftype) {
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	case NL80211_IFTYPE_MONITOR:
+		err = dhd_set_monitor((dhd_pub_t *)(cfg->pub), 0, 1);
+		if (err < 0) {
+			WL_ERR(("failed to enable monitor mode (%d)\n", err));
+			return err;
+		}
+		wl_set_mode_by_netdev(cfg, ndev, WL_MODE_MONITOR);
+		return 0;
+	case NL80211_IFTYPE_WDS:
+#else
 	case NL80211_IFTYPE_MONITOR:
 	case NL80211_IFTYPE_WDS:
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 		WL_ERR(("type (%d) : currently we do not support this mode\n",
 			iftype));
 		err = -EINVAL;

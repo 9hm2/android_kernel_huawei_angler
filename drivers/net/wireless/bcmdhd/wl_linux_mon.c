@@ -174,14 +174,6 @@ static int dhd_mon_if_subif_start_xmit(struct sk_buff *skb, struct net_device *n
 {
 	int ret = 0;
 	int rtap_len;
-	int qos_len = 0;
-	int dot11_hdr_len = 24;
-	int snap_len = 6;
-	unsigned char *pdata;
-	unsigned short frame_ctl;
-	unsigned char src_mac_addr[6];
-	unsigned char dst_mac_addr[6];
-	struct ieee80211_hdr *dot11_hdr;
 	struct ieee80211_radiotap_header *rtap_hdr;
 	monitor_interface* mon_if;
 
@@ -204,42 +196,32 @@ static int dhd_mon_if_subif_start_xmit(struct sk_buff *skb, struct net_device *n
 	if (unlikely(skb->len < rtap_len))
 		goto fail;
 
-	MON_PRINT("radiotap len (should be 14): %d\n", rtap_len);
+	MON_PRINT("radiotap len %d, total len %d\n", rtap_len, skb->len);
 
-	/* Skip the ratio tap header */
+	/* Strip the radiotap header; what remains is the raw 802.11 frame that
+	 * userspace (e.g. aireplay-ng) wants to inject. Anything left must at
+	 * least contain a minimal 802.11 control-frame header.
+	 */
+	if (unlikely(skb->len < rtap_len + 10))
+		goto fail;
 	skb_pull(skb, rtap_len);
 
-	dot11_hdr = (struct ieee80211_hdr *)skb->data;
-	frame_ctl = le16_to_cpu(dot11_hdr->frame_control);
-	/* Check if the QoS bit is set */
-	if ((frame_ctl & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_DATA) {
-		/* Check if this ia a Wireless Distribution System (WDS) frame
-		 * which has 4 MAC addresses
-		 */
-		if (dot11_hdr->frame_control & 0x0080)
-			qos_len = 2;
-		if ((dot11_hdr->frame_control & 0x0300) == 0x0300)
-			dot11_hdr_len += 6;
+	/* Hand the raw 802.11 frame to the real interface for injection. Unlike
+	 * the legacy path we do NOT restrict this to DATA frames or rewrite the
+	 * header into 802.3 form: management and control frames (deauth, auth,
+	 * probe, etc.) must be injected verbatim. The frame is delivered to the
+	 * firmware unchanged; whether it is finally transmitted raw depends on
+	 * the firmware being in monitor/injection-capable mode.
+	 */
+	PKTSETPRIO(skb, 0);
 
-		memcpy(dst_mac_addr, dot11_hdr->addr1, sizeof(dst_mac_addr));
-		memcpy(src_mac_addr, dot11_hdr->addr2, sizeof(src_mac_addr));
+	MON_PRINT("inject %d bytes via %s\n", skb->len, mon_if->real_ndev->name);
 
-		/* Skip the 802.11 header, QoS (if any) and SNAP, but leave spaces for
-		 * for two MAC addresses
-		 */
-		skb_pull(skb, dot11_hdr_len + qos_len + snap_len - sizeof(src_mac_addr) * 2);
-		pdata = (unsigned char*)skb->data;
-		memcpy(pdata, dst_mac_addr, sizeof(dst_mac_addr));
-		memcpy(pdata + sizeof(dst_mac_addr), src_mac_addr, sizeof(src_mac_addr));
-		PKTSETPRIO(skb, 0);
+	/* Use the real net device to transmit the packet */
+	ret = dhd_start_xmit(skb, mon_if->real_ndev);
 
-		MON_PRINT("if name: %s, matched if name %s\n", ndev->name, mon_if->real_ndev->name);
+	return ret;
 
-		/* Use the real net device to transmit the packet */
-		ret = dhd_start_xmit(skb, mon_if->real_ndev);
-
-		return ret;
-	}
 fail:
 	dev_kfree_skb(skb);
 	return 0;
@@ -330,11 +312,23 @@ int dhd_add_monitor(char *name, struct net_device **new_ndev)
 	g_monitor.mon_if[idx].radiotap_enabled = TRUE;
 	g_monitor.mon_if[idx].mon_ndev = ndev;
 	g_monitor.mon_if[idx].real_ndev = lookup_real_netdev(name);
+	if (g_monitor.mon_if[idx].real_ndev == NULL) {
+		/* Monitor names such as "mon0" do not embed the parent interface
+		 * name, so the heuristic lookup fails. Fall back to the primary
+		 * interface (index 0) so the monitor still shadows a real device
+		 * instead of leaving a NULL real_ndev (which the TX/RX paths
+		 * dereference).
+		 */
+		g_monitor.mon_if[idx].real_ndev = dhd_idx2net(g_monitor.dhd_pub, 0);
+		MON_PRINT("no name match for %s, defaulting to primary netdev\n", name);
+	}
 	dhd_mon = (dhd_linux_monitor_t **)netdev_priv(ndev);
 	*dhd_mon = &g_monitor;
 	g_monitor.monitor_state = MONITOR_STATE_INTERFACE_ADDED;
 	MON_PRINT("net device returned: 0x%p\n", ndev);
-	MON_PRINT("found a matched net device, name %s\n", g_monitor.mon_if[idx].real_ndev->name);
+	if (g_monitor.mon_if[idx].real_ndev)
+		MON_PRINT("monitor %s shadows real net device %s\n",
+			name, g_monitor.mon_if[idx].real_ndev->name);
 
 out:
 	if (ret && ndev)
@@ -344,6 +338,35 @@ out:
 	return ret;
 
 }
+
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+/* Return the registered monitor net_device that shadows real_ndev, so the RX
+ * path can deliver radiotap-tagged 802.11 frames to it. NULL if there is no
+ * monitor interface for that real device.
+ *
+ * This is called from the RX datapath, which may run in softirq/interrupt
+ * context, so it must not sleep: the g_monitor mutex is intentionally NOT
+ * taken here. The mon_if[] table is only mutated from add/delete paths that
+ * run under RTNL, and we only read word-sized pointers, so a lockless scan is
+ * safe for the purpose of locating the current monitor device.
+ */
+struct net_device *dhd_mon_lookup_dev(struct net_device *real_ndev)
+{
+	int i;
+
+	if (!real_ndev)
+		return NULL;
+
+	for (i = 0; i < DHD_MAX_IFS; i++) {
+		if (g_monitor.mon_if[i].mon_ndev &&
+			g_monitor.mon_if[i].real_ndev == real_ndev) {
+			return g_monitor.mon_if[i].mon_ndev;
+		}
+	}
+
+	return NULL;
+}
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 int dhd_del_monitor(struct net_device *ndev)
 {
@@ -386,6 +409,13 @@ int dhd_monitor_uninit(void)
 	int i;
 	struct net_device *ndev;
 	mutex_lock(&g_monitor.lock);
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	/* Clear cached firmware monitor state so a fresh bring-up does not start
+	 * diverting RX frames before monitor mode is actually re-enabled.
+	 */
+	if (g_monitor.dhd_pub)
+		((dhd_pub_t *)g_monitor.dhd_pub)->monitor_type = 0;
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 	if (g_monitor.monitor_state != MONITOR_STATE_DEINIT) {
 		for (i = 0; i < DHD_MAX_IFS; i++) {
 			ndev = g_monitor.mon_if[i].mon_ndev;

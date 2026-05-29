@@ -441,6 +441,9 @@ typedef struct dhd_pub {
 	bool ndo_host_ip_overflow;	/* # of host ip addr exceed FW capacity */
 	uint32 ndo_max_host_ip;		/* # of host ip addr supported by FW */
 #endif /* NDO_CONFIG_SUPPORT */
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	uint monitor_type;		/* monitor interface mode: 0 = off (WLC_SET_MONITOR value) */
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 } dhd_pub_t;
 
 typedef struct {
@@ -864,6 +867,16 @@ extern int dhd_ifname2idx(struct dhd_info *dhd, char *name);
 extern int dhd_ifidx2hostidx(struct dhd_info *dhd, int ifidx);
 extern int dhd_net2idx(struct dhd_info *dhd, struct net_device *net);
 extern struct net_device * dhd_idx2net(void *pub, int ifidx);
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+/* Put the firmware in/out of 802.11 monitor mode. val is the WLC_SET_MONITOR
+ * value (0 = off). Tracks the resulting state in dhdp->monitor_type.
+ */
+extern int dhd_set_monitor(dhd_pub_t *dhdp, int ifidx, int val);
+/* Look up the registered monitor net_device that shadows the given real
+ * net_device, or NULL if none / monitor mode is not active.
+ */
+extern struct net_device *dhd_mon_lookup_dev(struct net_device *real_ndev);
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 extern int net_os_send_hang_message(struct net_device *dev);
 extern int wl_host_event(dhd_pub_t *dhd_pub, int *idx, void *pktdata, size_t pktlen,
                          wl_event_msg_t *, void **data_ptr,  void *);
