@@ -32,6 +32,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    # Needed so the workflow can publish the flashable zip as a release.
+    permissions:
+      contents: write
     env:
       ARCH: arm64
       SUBARCH: arm64
@@ -196,6 +199,7 @@ jobs:
           ZIP="angler-nethunter-nexmon-${STAMP}.zip"
           ( cd "$HOME/ak3" && zip -r9 "$GITHUB_WORKSPACE/$ZIP" . -x ".git*" -x "*.zip" )
           echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+          echo "TAG_NAME=build-${STAMP}" >> "$GITHUB_ENV"
           ls -lh "$GITHUB_WORKSPACE/$ZIP"
 
       - name: Upload flashable zip
@@ -204,3 +208,25 @@ jobs:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
           if-no-files-found: error
+
+      # Publish the flashable zip to the repo's Releases page so it can be
+      # downloaded directly (https://github.com/<owner>/<repo>/releases).
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.ZIP_NAME }}
+          body: |
+            Automated build of the angler (Nexus 6P) NetHunter kernel with
+            native monitor mode + nexmon-patched firmware.
+
+            - Branch: `${{ github.ref_name }}`
+            - Commit: ${{ github.sha }}
+            - nexmon firmware: `${{ github.event.inputs.build_nexmon }}`
+              (chip `${{ github.event.inputs.nexmon_chip }}`, ver `${{ github.event.inputs.nexmon_fwver }}`)
+
+            Flash the attached zip in TWRP. The installer flashes the kernel
+            and installs the bundled `fw_bcmdhd.bin` (a backup of the stock
+            firmware is kept as `fw_bcmdhd.bin.stock`).
+          files: ${{ env.ZIP_NAME }}
+          fail_on_unmatched_files: true
