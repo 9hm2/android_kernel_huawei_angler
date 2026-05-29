@@ -90,10 +90,20 @@ jobs:
           export KCFLAGS="-fcommon -w"
           # The 3.10 Makefile does not create O= itself; make it first.
           mkdir -p out
-          make O=out ARCH=arm64 "${{ github.event.inputs.defconfig }}"
+          # This MSM tree routes CC through scripts/gcc-wrapper.py, a Python 2
+          # script that crashes under the runner's Python 3. Bypass it by
+          # pointing CC straight at the cross gcc (overrides the Makefile's
+          # "CC = gcc-wrapper.py ..." assignment).
+          make O=out ARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CC="${CROSS_COMPILE}gcc" \
+            HOSTCFLAGS="-fcommon -w" \
+            "${{ github.event.inputs.defconfig }}"
           make -j"$(nproc)" O=out ARCH=arm64 \
             CROSS_COMPILE="$CROSS_COMPILE" \
             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CC="${CROSS_COMPILE}gcc" \
             HOSTCFLAGS="-fcommon -w" \
             Image.gz-dtb
           ls -lh out/arch/arm64/boot/Image.gz-dtb
