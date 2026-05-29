@@ -130,7 +130,17 @@ jobs:
           set -euo pipefail
           sudo apt-get install -y --no-install-recommends \
             gcc-arm-none-eabi libgmp3-dev autoconf automake texinfo \
-            libtool-bin qpdf
+            libtool-bin qpdf flex bison libfl-dev
+          # nexmon's b43 assembler links the legacy lex library via -ll, which
+          # modern distros ship only as libfl. Provide a libl alias so the
+          # linker resolves -ll.
+          FLA="$(find /usr/lib -name 'libfl.a' 2>/dev/null | head -n1)"
+          if [ -n "$FLA" ]; then
+            sudo ln -sf "$FLA" "$(dirname "$FLA")/libl.a"
+            echo "aliased $(dirname "$FLA")/libl.a -> $FLA"
+          else
+            echo "::warning::libfl.a not found; -ll may fail"
+          fi
           git clone https://github.com/seemoo-lab/nexmon.git "$HOME/nexmon"
           cd "$HOME/nexmon"
           git checkout "${{ github.event.inputs.nexmon_ref }}"
