@@ -88,6 +88,8 @@ jobs:
           # gcc-10+ defaults to -fno-common which breaks this 3.10-era tree;
           # silence host-tool warnings as well so the old code base builds.
           export KCFLAGS="-fcommon -w"
+          # The 3.10 Makefile does not create O= itself; make it first.
+          mkdir -p out
           make O=out ARCH=arm64 "${{ github.event.inputs.defconfig }}"
           make -j"$(nproc)" O=out ARCH=arm64 \
             CROSS_COMPILE="$CROSS_COMPILE" \
