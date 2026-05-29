@@ -1,0 +1,160 @@
+name: Build kernel + AnyKernel (nexmon)
+
+# Manually triggered build: compiles the angler NetHunter kernel, builds the
+# nexmon monitor-mode firmware from source for the BCM4358, and packages both
+# into a TWRP-flashable AnyKernel3 zip uploaded as a workflow artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: "Kernel defconfig"
+        default: "nethunter_defconfig"
+        required: true
+      build_nexmon:
+        description: "Build and bundle the nexmon firmware"
+        type: boolean
+        default: true
+      nexmon_ref:
+        description: "seemoo-lab/nexmon git ref (branch/tag/commit)"
+        default: "master"
+        required: true
+      nexmon_chip:
+        description: "nexmon chip directory"
+        default: "bcm4358"
+        required: true
+      nexmon_fwver:
+        description: "nexmon firmware version directory"
+        default: "7_112_300_14_sta"
+        required: true
+
+# Old toolchains (GCC 4.9) and the nexmon prebuilt buildtools are most reliable
+# on the 22.04 image.
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      KBUILD_BUILD_USER: github
+      KBUILD_BUILD_HOST: actions
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio flex git gawk \
+            kmod libssl-dev libncurses5-dev wget xz-utils zip unzip rsync \
+            python3 \
+            libc6:i386 libstdc++6:i386 zlib1g:i386
+
+      # ---- Cross toolchains (Kali / Google standalone GCC 4.9) --------------
+      - name: Fetch cross toolchains
+        run: |
+          mkdir -p "$HOME/tc/aarch64" "$HOME/tc/armhf"
+          echo "Downloading aarch64 toolchain..."
+          wget -q -O /tmp/a64.tar.xz \
+            "https://images.kali.org/nethunter/toolchains/google_aarch64-standalone-oreo-4.9.tar.xz"
+          tar -xf /tmp/a64.tar.xz -C "$HOME/tc/aarch64" --strip-components=1
+          echo "Downloading armhf toolchain..."
+          wget -q -O /tmp/a32.tar.xz \
+            "https://images.kali.org/nethunter/toolchains/google_armhf-standalone-4.9.tar.xz"
+          tar -xf /tmp/a32.tar.xz -C "$HOME/tc/armhf" --strip-components=1
+
+          A64_GCC="$(find "$HOME/tc/aarch64" -name 'aarch64-*-gcc' | head -n1)"
+          A32_GCC="$(find "$HOME/tc/armhf" -name 'arm-*-gcc' | head -n1)"
+          echo "CROSS_COMPILE=${A64_GCC%gcc}" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_ARM32=${A32_GCC%gcc}" >> "$GITHUB_ENV"
+          echo "aarch64 prefix: ${A64_GCC%gcc}"
+          echo "armhf  prefix: ${A32_GCC%gcc}"
+          "$A64_GCC" --version | head -n1
+
+      # ---- Kernel ------------------------------------------------------------
+      - name: Build kernel (Image.gz-dtb)
+        run: |
+          set -euo pipefail
+          # gcc-10+ defaults to -fno-common which breaks this 3.10-era tree;
+          # silence host-tool warnings as well so the old code base builds.
+          export KCFLAGS="-fcommon -w"
+          make O=out ARCH=arm64 "${{ github.event.inputs.defconfig }}"
+          make -j"$(nproc)" O=out ARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            HOSTCFLAGS="-fcommon -w" \
+            Image.gz-dtb
+          ls -lh out/arch/arm64/boot/Image.gz-dtb
+
+      # ---- nexmon firmware (built from source) ------------------------------
+      - name: Build nexmon firmware
+        if: ${{ github.event.inputs.build_nexmon == 'true' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libgmp3-dev autoconf automake texinfo \
+            libtool-bin qpdf
+          git clone https://github.com/seemoo-lab/nexmon.git "$HOME/nexmon"
+          cd "$HOME/nexmon"
+          git checkout "${{ github.event.inputs.nexmon_ref }}"
+
+          # Build the isl library required by the nexmon flashpatch toolchain.
+          ( cd buildtools/isl-0.10 && CC=gcc ./configure && make -j"$(nproc)" && sudo make install )
+          ARCHLIB="/usr/lib/$(gcc -dumpmachine)"
+          sudo ln -sf /usr/local/lib/libisl.so "$ARCHLIB/libisl.so.10" || true
+          sudo ldconfig
+
+          # setup_env.sh exports NEXMON_ROOT and toolchain paths for the build.
+          set +eu; source ./setup_env.sh; set -eu
+          make            # build buildtools + libs
+
+          PATCHDIR="patches/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}/nexmon"
+          if [ ! -d "$PATCHDIR" ]; then
+            echo "::error::nexmon patch dir not found: $PATCHDIR"
+            echo "Available patches:"; ls -R patches | head -n 80
+            exit 1
+          fi
+          ( cd "$PATCHDIR" && make )
+
+          FW="$(find "$PATCHDIR" -maxdepth 1 -name 'fw_bcmdhd.bin' | head -n1)"
+          if [ -z "$FW" ]; then
+            echo "::error::nexmon build did not produce fw_bcmdhd.bin"
+            echo "Patch dir contents:"; ls -lh "$PATCHDIR"
+            exit 1
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/anykernel/firmware"
+          cp -f "$FW" "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin"
+          ls -lh "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin"
+
+      # ---- AnyKernel3 package -----------------------------------------------
+      - name: Assemble AnyKernel3 zip
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$HOME/ak3"
+          # Drop AnyKernel's sample config/artifacts and overlay ours.
+          rm -f "$HOME/ak3/anykernel.sh" "$HOME/ak3/Image"* "$HOME/ak3/zImage"* \
+                "$HOME/ak3/Image.gz-dtb" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/anykernel/anykernel.sh" "$HOME/ak3/anykernel.sh"
+          cp out/arch/arm64/boot/Image.gz-dtb "$HOME/ak3/Image.gz-dtb"
+
+          if [ -f "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin" ]; then
+            mkdir -p "$HOME/ak3/firmware"
+            cp "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin" "$HOME/ak3/firmware/fw_bcmdhd.bin"
+            echo "nexmon firmware bundled."
+          else
+            echo "::warning::No nexmon firmware bundled; zip will flash the kernel only."
+          fi
+
+          STAMP="$(date +%Y%m%d)-$(echo "$GITHUB_SHA" | cut -c1-8)"
+          ZIP="angler-nethunter-nexmon-${STAMP}.zip"
+          ( cd "$HOME/ak3" && zip -r9 "$GITHUB_WORKSPACE/$ZIP" . -x ".git*" -x "*.zip" )
+          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+          ls -lh "$GITHUB_WORKSPACE/$ZIP"
+
+      - name: Upload flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error
