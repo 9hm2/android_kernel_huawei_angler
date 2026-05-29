@@ -52,28 +52,34 @@ jobs:
             libc6:i386 libstdc++6:i386 zlib1g:i386
 
       # ---- Cross toolchains (AOSP prebuilt standalone GCC 4.9) --------------
-      # The Kali toolchain mirror is unreliable, so pull the canonical Android
-      # prebuilt GCC 4.9 toolchains straight from googlesource (shallow clone).
+      # The Kali toolchain mirror is unreliable. Pull the canonical Android
+      # prebuilt GCC 4.9 toolchains from googlesource. NOTE: the repos' default
+      # branch (main) no longer ships the gcc compiler driver (only binutils);
+      # the full GCC 4.9 compiler still lives on the legacy nougat-release
+      # branch, so we clone that explicitly.
       - name: Fetch cross toolchains
         run: |
           set -euo pipefail
-          git clone --depth=1 \
+          TC_BRANCH=nougat-release
+          git clone --depth=1 -b "$TC_BRANCH" \
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
             "$HOME/tc/aarch64"
-          git clone --depth=1 \
+          git clone --depth=1 -b "$TC_BRANCH" \
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
             "$HOME/tc/armhf"
 
-          A64_GCC="$(find "$HOME/tc/aarch64" -name 'aarch64-*-gcc' | head -n1)"
-          A32_GCC="$(find "$HOME/tc/armhf" -name 'arm-*-gcc' | head -n1)"
-          if [ -z "$A64_GCC" ] || [ -z "$A32_GCC" ]; then
-            echo "::error::cross toolchain binaries not found after clone"; exit 1
+          CC64="$HOME/tc/aarch64/bin/aarch64-linux-android-gcc"
+          CC32="$HOME/tc/armhf/bin/arm-linux-androideabi-gcc"
+          if [ ! -x "$CC64" ] || [ ! -x "$CC32" ]; then
+            echo "::error::gcc compiler driver missing (binutils-only toolchain branch?)"
+            ls -la "$HOME/tc/aarch64/bin" || true
+            exit 1
           fi
-          echo "CROSS_COMPILE=${A64_GCC%gcc}" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE_ARM32=${A32_GCC%gcc}" >> "$GITHUB_ENV"
-          echo "aarch64 prefix: ${A64_GCC%gcc}"
-          echo "armhf  prefix: ${A32_GCC%gcc}"
-          "$A64_GCC" --version | head -n1
+          echo "CROSS_COMPILE=${CC64%gcc}" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_ARM32=${CC32%gcc}" >> "$GITHUB_ENV"
+          echo "aarch64 prefix: ${CC64%gcc}"
+          echo "armhf  prefix: ${CC32%gcc}"
+          "$CC64" --version | head -n1
 
       # ---- Kernel ------------------------------------------------------------
       - name: Build kernel (Image.gz-dtb)
