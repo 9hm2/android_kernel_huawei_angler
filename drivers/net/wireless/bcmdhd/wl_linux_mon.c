@@ -33,6 +33,10 @@
 #include <linux/ieee80211.h>
 #include <linux/rtnetlink.h>
 #include <net/ieee80211_radiotap.h>
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+#include <linux/workqueue.h>
+#include <linux/slab.h>
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 #include <wlioctl.h>
 #include <bcmutils.h>
@@ -73,9 +77,76 @@ typedef struct dhd_linux_monitor {
 	monitor_states_t monitor_state;
 	monitor_interface mon_if[DHD_MAX_IFS];
 	struct mutex lock;		/* lock to protect mon_if */
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	struct workqueue_struct *inject_wq;	/* serializes frame injection */
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 } dhd_linux_monitor_t;
 
 static dhd_linux_monitor_t g_monitor;
+
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+/* nexmon NEX_INJECT_FRAME ioctl payload: a length-prefixed list of frames.
+ * type == 0 -> firmware adds a dummy radiotap header (frame has none);
+ * type == 1 -> frame already begins with a radiotap header (our case).
+ */
+struct dhd_inject_hdr {
+	uint16 len;	/* bytes of 'data' for this entry, plus 4 (see fw) */
+	uint8  pad;
+	uint8  type;
+	uint8  data[0];
+};
+
+/* Deferred injection work: ndo_start_xmit runs in atomic (softirq) context but
+ * dhd_wl_ioctl_cmd sleeps waiting on the dongle, so the actual ioctl must run
+ * from process context on a workqueue.
+ */
+struct dhd_inject_work {
+	struct work_struct work;
+	struct sk_buff *skb;
+};
+
+/* dhd_wl_ioctl_cmd() is declared in dhd.h (already included). */
+
+static void dhd_mon_inject_work(struct work_struct *ws)
+{
+	struct dhd_inject_work *iw = container_of(ws, struct dhd_inject_work, work);
+	struct sk_buff *skb = iw->skb;
+	dhd_pub_t *dhdp = (dhd_pub_t *)g_monitor.dhd_pub;
+	struct dhd_inject_hdr *frm;
+	int buflen, ret;
+	char *buf;
+
+	if (!dhdp || !dhdp->monitor_type)
+		goto out;
+
+	/* Build the NEX_INJECT_FRAME buffer: one header followed by the frame,
+	 * which already carries its radiotap header (type 1). The firmware copies
+	 * (frm->len - 4) bytes, so frm->len = framelen + 4. The firmware loop then
+	 * advances by frm->len and reads the next entry's length; append a
+	 * zero-length terminator (kzalloc-cleared) so it stops without reading
+	 * past our buffer.
+	 */
+	buflen = sizeof(*frm) + skb->len + sizeof(*frm);
+	buf = kzalloc(buflen, GFP_KERNEL);
+	if (!buf)
+		goto out;
+
+	frm = (struct dhd_inject_hdr *)buf;
+	frm->len = (uint16)(skb->len + 4);
+	frm->pad = 0;
+	frm->type = 1;	/* radiotap header present */
+	memcpy(frm->data, skb->data, skb->len);
+
+	ret = dhd_wl_ioctl_cmd(dhdp, DHD_NEX_INJECT_FRAME, buf, buflen, TRUE, 0);
+	if (ret < 0)
+		MON_PRINT("NEX_INJECT_FRAME ioctl failed: %d\n", ret);
+
+	kfree(buf);
+out:
+	dev_kfree_skb_any(skb);
+	kfree(iw);
+}
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 static struct net_device* lookup_real_netdev(char *name);
 static monitor_interface* ndev_to_monif(struct net_device *ndev);
@@ -172,10 +243,12 @@ static int dhd_mon_if_stop(struct net_device *ndev)
 
 static int dhd_mon_if_subif_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
-	int ret = 0;
 	int rtap_len;
 	struct ieee80211_radiotap_header *rtap_hdr;
-	monitor_interface* mon_if;
+	monitor_interface *mon_if;
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	struct dhd_inject_work *iw;
+#endif
 
 	MON_PRINT("enter\n");
 
@@ -185,6 +258,10 @@ static int dhd_mon_if_subif_start_xmit(struct sk_buff *skb, struct net_device *n
 		goto fail;
 	}
 
+	/* Frames written to the monitor interface are radiotap-prefixed raw
+	 * 802.11 frames (aireplay-ng, etc.). Validate the radiotap header before
+	 * handing the frame to the firmware.
+	 */
 	if (unlikely(skb->len < sizeof(struct ieee80211_radiotap_header)))
 		goto fail;
 
@@ -193,37 +270,38 @@ static int dhd_mon_if_subif_start_xmit(struct sk_buff *skb, struct net_device *n
 		goto fail;
 
 	rtap_len = ieee80211_get_radiotap_len(skb->data);
-	if (unlikely(skb->len < rtap_len))
-		goto fail;
-
-	MON_PRINT("radiotap len %d, total len %d\n", rtap_len, skb->len);
-
-	/* Strip the radiotap header; what remains is the raw 802.11 frame that
-	 * userspace (e.g. aireplay-ng) wants to inject. Anything left must at
-	 * least contain a minimal 802.11 control-frame header.
-	 */
+	/* Need the radiotap header plus at least a minimal 802.11 header. */
 	if (unlikely(skb->len < rtap_len + 10))
 		goto fail;
-	skb_pull(skb, rtap_len);
 
-	/* Hand the raw 802.11 frame to the real interface for injection. Unlike
-	 * the legacy path we do NOT restrict this to DATA frames or rewrite the
-	 * header into 802.3 form: management and control frames (deauth, auth,
-	 * probe, etc.) must be injected verbatim. The frame is delivered to the
-	 * firmware unchanged; whether it is finally transmitted raw depends on
-	 * the firmware being in monitor/injection-capable mode.
+	MON_PRINT("inject %d bytes (radiotap %d) via %s\n",
+		skb->len, rtap_len, mon_if->real_ndev->name);
+
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	/* Inject through the nexmon NEX_INJECT_FRAME ioctl, which expects the
+	 * full radiotap + 802.11 frame and handles every frame type (management,
+	 * control, data). Because the ioctl sleeps and we are in the atomic
+	 * xmit path, defer it to a workqueue. The skb (incl. radiotap header) is
+	 * handed off verbatim and freed by the work item.
 	 */
-	PKTSETPRIO(skb, 0);
+	if (!g_monitor.inject_wq)
+		goto fail;
 
-	MON_PRINT("inject %d bytes via %s\n", skb->len, mon_if->real_ndev->name);
+	iw = kmalloc(sizeof(*iw), GFP_ATOMIC);
+	if (!iw)
+		goto fail;
 
-	/* Use the real net device to transmit the packet */
-	ret = dhd_start_xmit(skb, mon_if->real_ndev);
+	iw->skb = skb;
+	INIT_WORK(&iw->work, dhd_mon_inject_work);
+	queue_work(g_monitor.inject_wq, &iw->work);
 
-	return ret;
+	return 0;
+#else
+	goto fail;
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 fail:
-	dev_kfree_skb(skb);
+	dev_kfree_skb_any(skb);
 	return 0;
 }
 
@@ -399,6 +477,12 @@ int dhd_monitor_init(void *dhd_pub)
 	if (g_monitor.monitor_state == MONITOR_STATE_DEINIT) {
 		g_monitor.dhd_pub = dhd_pub;
 		mutex_init(&g_monitor.lock);
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+		/* Single-threaded so injected frames preserve submission order. */
+		g_monitor.inject_wq = create_singlethread_workqueue("dhd_mon_inject");
+		if (!g_monitor.inject_wq)
+			MON_PRINT("failed to create injection workqueue\n");
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 		g_monitor.monitor_state = MONITOR_STATE_INIT;
 	}
 	return 0;
@@ -415,6 +499,13 @@ int dhd_monitor_uninit(void)
 	 */
 	if (g_monitor.dhd_pub)
 		((dhd_pub_t *)g_monitor.dhd_pub)->monitor_type = 0;
+	/* Drain and tear down the injection workqueue. The work items do not take
+	 * g_monitor.lock, so flushing under the mutex cannot deadlock.
+	 */
+	if (g_monitor.inject_wq) {
+		destroy_workqueue(g_monitor.inject_wq);
+		g_monitor.inject_wq = NULL;
+	}
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 	if (g_monitor.monitor_state != MONITOR_STATE_DEINIT) {
 		for (i = 0; i < DHD_MAX_IFS; i++) {

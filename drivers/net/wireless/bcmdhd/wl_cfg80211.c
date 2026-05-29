@@ -1337,7 +1337,7 @@ wl_cfg80211_add_monitor_if(struct bcm_cfg80211 *cfg, char *name)
 		return ERR_PTR(err ? err : -ENODEV);
 	}
 
-	err = dhd_set_monitor(dhd, 0, 1);
+	err = dhd_set_monitor(dhd, 0, DHD_MONITOR_RADIOTAP);
 	if (err < 0) {
 		WL_ERR(("failed to enable firmware monitor mode (%d)\n", err));
 		dhd_del_monitor(ndev);
@@ -1772,7 +1772,7 @@ wl_cfg80211_change_virtual_iface(struct wiphy *wiphy, struct net_device *ndev,
 		 * ("iw dev wlanX set type monitor"). The netdev is retyped to
 		 * radiotap so the RX path delivers raw 802.11 frames on it.
 		 */
-		err = dhd_set_monitor(dhd, 0, 1);
+		err = dhd_set_monitor(dhd, 0, DHD_MONITOR_RADIOTAP);
 		if (err < 0) {
 			WL_ERR(("failed to enable monitor mode (%d)\n", err));
 			return err;
@@ -11590,7 +11590,7 @@ static s32 wl_config_ifmode(struct bcm_cfg80211 *cfg, struct net_device *ndev, s
 	switch (iftype) {
 #ifdef CONFIG_BCMDHD_MONITOR_MODE
 	case NL80211_IFTYPE_MONITOR:
-		err = dhd_set_monitor((dhd_pub_t *)(cfg->pub), 0, 1);
+		err = dhd_set_monitor((dhd_pub_t *)(cfg->pub), 0, DHD_MONITOR_RADIOTAP);
 		if (err < 0) {
 			WL_ERR(("failed to enable monitor mode (%d)\n", err));
 			return err;

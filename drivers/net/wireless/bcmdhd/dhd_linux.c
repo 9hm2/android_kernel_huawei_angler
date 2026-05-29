@@ -2810,18 +2810,20 @@ dhd_is_rxthread_enabled(dhd_pub_t *dhdp)
 #ifdef CONFIG_BCMDHD_MONITOR_MODE
 /*
  * Deliver a received frame to the monitor interface when the firmware is in
- * monitor mode. The raw 802.11 frame is prefixed with a minimal radiotap
- * header so that standard tooling (libpcap, airodump-ng) can consume it on the
- * ARPHRD_IEEE80211_RADIOTAP interface created by dhd_add_monitor().
+ * monitor mode, on the ARPHRD_IEEE80211_RADIOTAP interface created by
+ * dhd_add_monitor() (or on the real netdev if it was retyped in place).
+ *
+ * Two firmware behaviours are handled, selected by dhdp->monitor_type:
+ *   DHD_MONITOR_RADIOTAP (2): monitor/injection-capable (nexmon) firmware has
+ *       already prepended a full radiotap header (with TSF/channel/RSSI/...),
+ *       so we must NOT add another one - just retarget the skb.
+ *   DHD_MONITOR_IEEE80211 (1): firmware delivers a raw 802.11 frame; prepend a
+ *       minimal (presence-less) radiotap header so libpcap/airodump can parse
+ *       it as a DLT_IEEE802_11_RADIO capture.
  *
  * Returns 0 if the packet was consumed (delivered or dropped) by the monitor
  * path, or a negative value if the caller should fall back to normal RX
  * processing (e.g. for in-band Broadcom event frames).
- *
- * Note: the FullMAC firmware does not expose per-frame PHY metadata on this
- * path, so the radiotap header is emitted with no presence fields. A
- * monitor/injection-capable firmware that prepends its own PHY status could be
- * parsed here to populate channel/rate/RSSI.
  */
 static int
 dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
@@ -2855,23 +2857,28 @@ dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
 			return -1;
 	}
 
-	/* Make room for and prepend the radiotap header. */
-	if (skb_headroom(skb) < (int)sizeof(*rtap)) {
-		struct sk_buff *nskb = skb_realloc_headroom(skb, sizeof(*rtap));
-		if (!nskb) {
+	/* Only when the firmware hands us a raw 802.11 frame do we add our own
+	 * minimal radiotap header. With RADIOTAP-mode firmware the header is
+	 * already present and prepending a second one would corrupt the capture.
+	 */
+	if (dhdp->monitor_type == DHD_MONITOR_IEEE80211) {
+		if (skb_headroom(skb) < (int)sizeof(*rtap)) {
+			struct sk_buff *nskb = skb_realloc_headroom(skb, sizeof(*rtap));
+			if (!nskb) {
+				dev_kfree_skb_any(skb);
+				return 0;
+			}
 			dev_kfree_skb_any(skb);
-			return 0;
+			skb = nskb;
 		}
-		dev_kfree_skb_any(skb);
-		skb = nskb;
-	}
 
-	rtap = (struct ieee80211_radiotap_header *)skb_push(skb, sizeof(*rtap));
-	memset(rtap, 0, sizeof(*rtap));
-	rtap->it_version = 0;
-	rtap->it_pad = 0;
-	rtap->it_len = cpu_to_le16(sizeof(*rtap));
-	rtap->it_present = 0;
+		rtap = (struct ieee80211_radiotap_header *)skb_push(skb, sizeof(*rtap));
+		memset(rtap, 0, sizeof(*rtap));
+		rtap->it_version = 0;
+		rtap->it_pad = 0;
+		rtap->it_len = cpu_to_le16(sizeof(*rtap));
+		rtap->it_present = 0;
+	}
 
 	skb->dev = mon_ndev;
 	skb->protocol = htons(ETH_P_802_2);

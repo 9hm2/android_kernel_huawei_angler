@@ -868,6 +868,15 @@ extern int dhd_ifidx2hostidx(struct dhd_info *dhd, int ifidx);
 extern int dhd_net2idx(struct dhd_info *dhd, struct net_device *net);
 extern struct net_device * dhd_idx2net(void *pub, int ifidx);
 #ifdef CONFIG_BCMDHD_MONITOR_MODE
+/* WLC_SET_MONITOR values understood by monitor/injection-capable (nexmon)
+ * firmware. RADIOTAP makes the firmware prepend a radiotap header to received
+ * frames; IEEE80211 delivers raw 802.11 (the host then adds radiotap).
+ */
+#define DHD_MONITOR_OFF			0
+#define DHD_MONITOR_IEEE80211		1
+#define DHD_MONITOR_RADIOTAP		2
+/* nexmon vendor ioctl that injects a (optionally radiotap-prefixed) frame. */
+#define DHD_NEX_INJECT_FRAME		408
 /* Put the firmware in/out of 802.11 monitor mode. val is the WLC_SET_MONITOR
  * value (0 = off). Tracks the resulting state in dhdp->monitor_type.
  */
