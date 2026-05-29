@@ -48,7 +48,10 @@ flash_boot;
 # firmware directory. On angler /vendor is part of /system (pre-Treble), so we
 # try the real /vendor mountpoint first and fall back to /system/vendor.
 install_nexmon_firmware() {
-  local src="$home/firmware/fw_bcmdhd.bin";
+  # AnyKernel3 extracts the zip into $AKHOME (older AK builds used $home);
+  # fall back gracefully so the bundled firmware is found either way.
+  local akroot="${AKHOME:-$home}";
+  local src="$akroot/firmware/fw_bcmdhd.bin";
   local fwdir="" dst="";
 
   if [ ! -f "$src" ]; then
