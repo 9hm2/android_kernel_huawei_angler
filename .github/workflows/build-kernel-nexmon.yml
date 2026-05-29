@@ -51,21 +51,24 @@ jobs:
             python3 \
             libc6:i386 libstdc++6:i386 zlib1g:i386
 
-      # ---- Cross toolchains (Kali / Google standalone GCC 4.9) --------------
+      # ---- Cross toolchains (AOSP prebuilt standalone GCC 4.9) --------------
+      # The Kali toolchain mirror is unreliable, so pull the canonical Android
+      # prebuilt GCC 4.9 toolchains straight from googlesource (shallow clone).
       - name: Fetch cross toolchains
         run: |
-          mkdir -p "$HOME/tc/aarch64" "$HOME/tc/armhf"
-          echo "Downloading aarch64 toolchain..."
-          wget -q -O /tmp/a64.tar.xz \
-            "https://images.kali.org/nethunter/toolchains/google_aarch64-standalone-oreo-4.9.tar.xz"
-          tar -xf /tmp/a64.tar.xz -C "$HOME/tc/aarch64" --strip-components=1
-          echo "Downloading armhf toolchain..."
-          wget -q -O /tmp/a32.tar.xz \
-            "https://images.kali.org/nethunter/toolchains/google_armhf-standalone-4.9.tar.xz"
-          tar -xf /tmp/a32.tar.xz -C "$HOME/tc/armhf" --strip-components=1
+          set -euo pipefail
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            "$HOME/tc/aarch64"
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+            "$HOME/tc/armhf"
 
           A64_GCC="$(find "$HOME/tc/aarch64" -name 'aarch64-*-gcc' | head -n1)"
           A32_GCC="$(find "$HOME/tc/armhf" -name 'arm-*-gcc' | head -n1)"
+          if [ -z "$A64_GCC" ] || [ -z "$A32_GCC" ]; then
+            echo "::error::cross toolchain binaries not found after clone"; exit 1
+          fi
           echo "CROSS_COMPILE=${A64_GCC%gcc}" >> "$GITHUB_ENV"
           echo "CROSS_COMPILE_ARM32=${A32_GCC%gcc}" >> "$GITHUB_ENV"
           echo "aarch64 prefix: ${A64_GCC%gcc}"
