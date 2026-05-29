@@ -82,6 +82,27 @@ jobs:
           "$CC64" --version | head -n1
 
       # ---- Kernel ------------------------------------------------------------
+      # This MSM tree forces CC through scripts/gcc-wrapper.py (a Python 2
+      # script that scans for "forbidden warnings"). Under the runner's
+      # Python 3 it raises SyntaxError and breaks every compile, and a
+      # command-line CC= override does not propagate through the O= sub-make.
+      # Replace the wrapper with a transparent Python 3 pass-through to the
+      # real compiler (CC = gcc-wrapper.py $(REAL_CC), so argv[1:] is the
+      # actual command to run). CI-only edit of the fresh checkout.
+      - name: Neutralize Python2 gcc-wrapper
+        run: |
+          set -euo pipefail
+          cat > scripts/gcc-wrapper.py <<'PYEOF'
+          #!/usr/bin/env python3
+          import os, sys
+          args = sys.argv[1:]
+          if not args:
+              sys.exit("gcc-wrapper: no compiler command given")
+          os.execvp(args[0], args)
+          PYEOF
+          chmod +x scripts/gcc-wrapper.py
+          python3 -c "import ast; ast.parse(open('scripts/gcc-wrapper.py').read()); print('wrapper parses under python3')"
+
       - name: Build kernel (Image.gz-dtb)
         run: |
           set -euo pipefail
@@ -90,20 +111,14 @@ jobs:
           export KCFLAGS="-fcommon -w"
           # The 3.10 Makefile does not create O= itself; make it first.
           mkdir -p out
-          # This MSM tree routes CC through scripts/gcc-wrapper.py, a Python 2
-          # script that crashes under the runner's Python 3. Bypass it by
-          # pointing CC straight at the cross gcc (overrides the Makefile's
-          # "CC = gcc-wrapper.py ..." assignment).
           make O=out ARCH=arm64 \
             CROSS_COMPILE="$CROSS_COMPILE" \
             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-            CC="${CROSS_COMPILE}gcc" \
             HOSTCFLAGS="-fcommon -w" \
             "${{ github.event.inputs.defconfig }}"
           make -j"$(nproc)" O=out ARCH=arm64 \
             CROSS_COMPILE="$CROSS_COMPILE" \
             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-            CC="${CROSS_COMPILE}gcc" \
             HOSTCFLAGS="-fcommon -w" \
             Image.gz-dtb
           ls -lh out/arch/arm64/boot/Image.gz-dtb
