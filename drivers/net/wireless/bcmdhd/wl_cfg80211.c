@@ -602,7 +602,7 @@ static void wl_send_event(struct net_device *dev, uint32 event_type, uint32 stat
 /*
  * Some external functions, TODO: move them to dhd_linux.h
  */
-int dhd_add_monitor(char *name, struct net_device **new_ndev);
+int dhd_add_monitor(char *name, struct net_device **new_ndev, void *wdev);
 int dhd_del_monitor(struct net_device *ndev);
 int dhd_monitor_init(void *dhd_pub);
 int dhd_monitor_uninit(void);
@@ -1334,24 +1334,41 @@ wl_cfg80211_add_monitor_if(struct bcm_cfg80211 *cfg, char *name)
 {
 #ifdef CONFIG_BCMDHD_MONITOR_MODE
 	struct net_device *ndev = NULL;
+	struct wireless_dev *wdev = NULL;
 	dhd_pub_t *dhd = (dhd_pub_t *)(cfg->pub);
 	int err;
+
+	/* The cfg80211 core (esp. on P2P_DEV_IF builds, where add_virtual_intf
+	 * returns a wireless_dev) dereferences ndev->ieee80211_ptr while the
+	 * monitor netdev registers. Allocate the wdev up front and hand it to
+	 * dhd_add_monitor so it is attached before register_netdevice().
+	 */
+	wdev = kzalloc(sizeof(*wdev), GFP_KERNEL);
+	if (!wdev) {
+		WL_ERR(("failed to allocate wireless_dev for monitor\n"));
+		return ERR_PTR(-ENOMEM);
+	}
+	wdev->wiphy = cfg->wdev->wiphy;
+	wdev->iftype = NL80211_IFTYPE_MONITOR;
 
 	/* Create the radiotap monitor net device that shadows the primary
 	 * interface, then put the firmware into monitor mode. The order matters:
 	 * the RX path only diverts frames to the monitor device once both the
 	 * device exists and dhd->monitor_type is set.
 	 */
-	err = dhd_add_monitor(name, &ndev);
+	err = dhd_add_monitor(name, &ndev, wdev);
 	if (err || !ndev) {
 		WL_ERR(("dhd_add_monitor failed (%d)\n", err));
+		kfree(wdev);
 		return ERR_PTR(err ? err : -ENODEV);
 	}
+	SET_NETDEV_DEV(ndev, wiphy_dev(wdev->wiphy));
 
 	err = dhd_set_monitor(dhd, 0, DHD_MONITOR_RADIOTAP);
 	if (err < 0) {
 		WL_ERR(("failed to enable firmware monitor mode (%d)\n", err));
 		dhd_del_monitor(ndev);
+		kfree(wdev);
 		return ERR_PTR(err);
 	}
 
@@ -1363,7 +1380,7 @@ wl_cfg80211_add_monitor_if(struct bcm_cfg80211 *cfg, char *name)
 #else
 	struct net_device* ndev = NULL;
 
-	dhd_add_monitor(name, &ndev);
+	dhd_add_monitor(name, &ndev, NULL);
 	WL_INFORM(("wl_cfg80211_add_monitor_if net device returned: 0x%p\n", ndev));
 	return ndev_to_cfgdev(ndev);
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
@@ -1646,8 +1663,15 @@ wl_cfg80211_del_virtual_iface(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev)
 	 * monitor mode first, then unregister the shadow device.
 	 */
 	if (dev && dev->type == ARPHRD_IEEE80211_RADIOTAP) {
+		struct wireless_dev *mwdev = dev->ieee80211_ptr;
 		dhd_set_monitor((dhd_pub_t *)(cfg->pub), 0, 0);
-		return dhd_del_monitor(dev);
+		/* dhd_del_monitor() unregisters and frees the netdev but not the
+		 * wireless_dev we allocated in wl_cfg80211_add_monitor_if(); free
+		 * it here to avoid a leak.
+		 */
+		ret = dhd_del_monitor(dev);
+		kfree(mwdev);
+		return ret;
 	}
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 

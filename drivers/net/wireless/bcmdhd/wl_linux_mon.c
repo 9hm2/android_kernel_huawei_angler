@@ -36,6 +36,7 @@
 #ifdef CONFIG_BCMDHD_MONITOR_MODE
 #include <linux/workqueue.h>
 #include <linux/slab.h>
+#include <net/cfg80211.h>	/* full struct wireless_dev for ieee80211_ptr setup */
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 #include <wlioctl.h>
@@ -51,7 +52,7 @@ typedef enum monitor_states
 	MONITOR_STATE_INTERFACE_ADDED = 0x2,
 	MONITOR_STATE_INTERFACE_DELETED = 0x4
 } monitor_states_t;
-int dhd_add_monitor(char *name, struct net_device **new_ndev);
+int dhd_add_monitor(char *name, struct net_device **new_ndev, void *wdev);
 extern int dhd_start_xmit(struct sk_buff *skb, struct net_device *net);
 int dhd_del_monitor(struct net_device *ndev);
 int dhd_monitor_init(void *dhd_pub);
@@ -337,7 +338,7 @@ static int dhd_mon_if_change_mac(struct net_device *ndev, void *addr)
  * Global function definitions (declared in dhd_linux_mon.h)
  */
 
-int dhd_add_monitor(char *name, struct net_device **new_ndev)
+int dhd_add_monitor(char *name, struct net_device **new_ndev, void *wdev)
 {
 	int i;
 	int idx = -1;
@@ -379,6 +380,17 @@ int dhd_add_monitor(char *name, struct net_device **new_ndev)
 	strncpy(ndev->name, name, IFNAMSIZ);
 	ndev->name[IFNAMSIZ - 1] = 0;
 	ndev->netdev_ops = &dhd_mon_if_ops;
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	/* Attach the wireless_dev the cfg80211 core needs. With P2P_DEV_IF builds
+	 * add_virtual_intf returns ndev->ieee80211_ptr, and the nl80211 core
+	 * dereferences it during NETDEV_REGISTER; a NULL here panics the kernel.
+	 * It must be set before register_netdevice().
+	 */
+	if (wdev) {
+		ndev->ieee80211_ptr = (struct wireless_dev *)wdev;
+		((struct wireless_dev *)wdev)->netdev = ndev;
+	}
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 	ret = register_netdevice(ndev);
 	if (ret) {
