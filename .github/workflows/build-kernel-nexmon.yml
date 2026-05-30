@@ -164,6 +164,18 @@ jobs:
             echo "Available patches:"; ls -R patches | head -n 80
             exit 1
           fi
+
+          # Harden the BCM4358 injection handler: upstream nexmon never checks
+          # pkt_buf_get_skb() in NEX_INJECT_FRAME, so an injection flood that
+          # exhausts the firmware SKB pool dereferences NULL and traps the
+          # dongle (epc 0x216dfc -> PCIe linkdown / endless recovery). Add the
+          # NULL guard newer chips already carry. Only applies to the affected
+          # bcm4358 handler; no-op elsewhere or if already guarded.
+          IOCTL_SRC="$PATCHDIR/src/ioctl.c"
+          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && [ -f "$IOCTL_SRC" ]; then
+            bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-inject-null-check.sh" "$IOCTL_SRC"
+          fi
+
           ( cd "$PATCHDIR" && make )
 
           FW="$(find "$PATCHDIR" -maxdepth 1 -name 'fw_bcmdhd.bin' | head -n1)"
