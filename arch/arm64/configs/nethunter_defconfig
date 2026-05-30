@@ -933,11 +933,21 @@ CONFIG_BT_HIDP=y
 #
 CONFIG_BT_HCIBTUSB=y
 # CONFIG_BT_HCIBTSDIO is not set
-# CONFIG_BT_HCIUART is not set
+# Enable the UART HCI line discipline so the on-board BCM4358 Bluetooth on
+# /dev/ttyHS0 can be attached as a real hciN device (hciattach/btattach),
+# making it usable from BlueZ (bluetoothctl/hcitool/btmgmt) under NetHunter.
+# Include H4 (BCM uses H4), 3-wire (H5) and HCILL for flexibility.
+CONFIG_BT_HCIUART=y
+CONFIG_BT_HCIUART_H4=y
+CONFIG_BT_HCIUART_BCSP=y
+CONFIG_BT_HCIUART_LL=y
+CONFIG_BT_HCIUART_3WIRE=y
 CONFIG_BT_HCIBCM203X=y
 CONFIG_BT_HCIBPA10X=y
 CONFIG_BT_HCIBFUSB=y
-# CONFIG_BT_HCIVHCI is not set
+# Virtual HCI: lets a userspace HCI bridge (e.g. btproxy / a vendor-HAL shim)
+# present the controller as hciN when the line-discipline path is not used.
+CONFIG_BT_HCIVHCI=y
 # CONFIG_BT_MRVL is not set
 CONFIG_BT_ATH3K=y
 CONFIG_MSM_BT_POWER=y
