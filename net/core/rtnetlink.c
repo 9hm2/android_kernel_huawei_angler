@@ -2659,8 +2659,10 @@ static int rtnetlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 	sz_idx = type>>2;
 	kind = type&3;
 
+#ifndef CONFIG_NETHUNTER_ALLOW_NET_ADMIN_FROM_CHROOT
 	if (kind != 2 && !netlink_net_capable(skb, CAP_NET_ADMIN))
 		return -EPERM;
+#endif
 
 	if (kind == 2 && nlh->nlmsg_flags&NLM_F_DUMP) {
 		struct sock *rtnl;

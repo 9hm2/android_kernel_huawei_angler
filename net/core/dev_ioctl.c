@@ -521,8 +521,10 @@ int dev_ioctl(struct net *net, unsigned int cmd, void __user *arg)
 	case SIOCBRADDIF:
 	case SIOCBRDELIF:
 	case SIOCSHWTSTAMP:
+#ifndef CONFIG_NETHUNTER_ALLOW_NET_ADMIN_FROM_CHROOT
 		if (!ns_capable(net->user_ns, CAP_NET_ADMIN))
 			return -EPERM;
+#endif
 		/* fall through */
 	case SIOCBONDSLAVEINFOQUERY:
 	case SIOCBONDINFOQUERY:

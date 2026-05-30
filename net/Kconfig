@@ -23,6 +23,23 @@ menuconfig NET
 
 if NET
 
+config NETHUNTER_ALLOW_NET_ADMIN_FROM_CHROOT
+	bool "Allow link admin (up/down) without CAP_NET_ADMIN (INSECURE)"
+	default n
+	help
+	  Drop the CAP_NET_ADMIN check on interface administration (bringing
+	  links up/down, MTU/flags changes) via both the ioctl (ifconfig) and
+	  rtnetlink (ip link) paths.
+
+	  This lets an unprivileged context such as a Kali/NetHunter chroot run
+	  "ifconfig wlan0 up" / "ip link set wlan0 up" directly, which it cannot
+	  otherwise do because its process lacks CAP_NET_ADMIN.
+
+	  WARNING: this is a deliberate, system-wide security weakening intended
+	  only for a dedicated penetration-testing / lab device. It lets ANY
+	  process reconfigure ANY network interface. Do not enable on a daily
+	  driver. Say N unless you own the device and accept the risk.
+
 config WANT_COMPAT_NETLINK_MESSAGES
 	bool
 	help
