@@ -534,7 +534,9 @@ int dhd_monitor_uninit(void)
 			ndev = g_monitor.mon_if[i].mon_ndev;
 			if (ndev) {
 				unregister_netdevice(ndev);
+#ifndef CONFIG_BCMDHD_MONITOR_MODE
 				free_netdev(ndev);
+#endif /* !CONFIG_BCMDHD_MONITOR_MODE */
 				g_monitor.mon_if[i].real_ndev = NULL;
 				g_monitor.mon_if[i].mon_ndev = NULL;
 			}
