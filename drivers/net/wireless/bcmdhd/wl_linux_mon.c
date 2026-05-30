@@ -384,11 +384,14 @@ int dhd_add_monitor(char *name, struct net_device **new_ndev, void *wdev)
 	/* Attach the wireless_dev the cfg80211 core needs. With P2P_DEV_IF builds
 	 * add_virtual_intf returns ndev->ieee80211_ptr, and the nl80211 core
 	 * dereferences it during NETDEV_REGISTER; a NULL here panics the kernel.
-	 * It must be set before register_netdevice().
+	 * Both the wdev link and the parent (wiphy) device must be set before
+	 * register_netdevice(), because the NETDEV_REGISTER notifier creates a
+	 * "phy80211" sysfs link to the parent.
 	 */
 	if (wdev) {
 		ndev->ieee80211_ptr = (struct wireless_dev *)wdev;
 		((struct wireless_dev *)wdev)->netdev = ndev;
+		SET_NETDEV_DEV(ndev, wiphy_dev(((struct wireless_dev *)wdev)->wiphy));
 	}
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 

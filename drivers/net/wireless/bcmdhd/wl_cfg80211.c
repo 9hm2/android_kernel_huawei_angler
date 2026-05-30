@@ -1362,7 +1362,6 @@ wl_cfg80211_add_monitor_if(struct bcm_cfg80211 *cfg, char *name)
 		kfree(wdev);
 		return ERR_PTR(err ? err : -ENODEV);
 	}
-	SET_NETDEV_DEV(ndev, wiphy_dev(wdev->wiphy));
 
 	err = dhd_set_monitor(dhd, 0, DHD_MONITOR_RADIOTAP);
 	if (err < 0) {
