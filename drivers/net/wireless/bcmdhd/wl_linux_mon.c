@@ -80,8 +80,19 @@ typedef struct dhd_linux_monitor {
 	struct mutex lock;		/* lock to protect mon_if */
 #ifdef CONFIG_BCMDHD_MONITOR_MODE
 	struct workqueue_struct *inject_wq;	/* serializes frame injection */
+	atomic_t inject_pending;	/* frames queued but not yet sent to fw */
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 } dhd_linux_monitor_t;
+
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+/* Upper bound on injection frames queued to the (single-threaded) workqueue
+ * but not yet handed to the dongle. Each NEX_INJECT_FRAME ioctl sleeps waiting
+ * on the firmware, so an unbounded queue lets a flood (aireplay-ng/wifite) pile
+ * up faster than the dongle drains it, eventually timing out (-110) and
+ * crashing the chip. Drop frames past this watermark instead.
+ */
+#define DHD_MON_INJECT_MAX_PENDING	16
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 static dhd_linux_monitor_t g_monitor;
 
@@ -144,6 +155,7 @@ static void dhd_mon_inject_work(struct work_struct *ws)
 
 	kfree(buf);
 out:
+	atomic_dec(&g_monitor.inject_pending);
 	dev_kfree_skb_any(skb);
 	kfree(iw);
 }
@@ -288,9 +300,21 @@ static int dhd_mon_if_subif_start_xmit(struct sk_buff *skb, struct net_device *n
 	if (!g_monitor.inject_wq)
 		goto fail;
 
-	iw = kmalloc(sizeof(*iw), GFP_ATOMIC);
-	if (!iw)
+	/* Apply backpressure: if the dongle has not drained previously queued
+	 * frames, drop this one rather than letting the queue grow without bound
+	 * (which floods the firmware and triggers a -110 timeout / chip crash).
+	 */
+	if (atomic_inc_return(&g_monitor.inject_pending) >
+			DHD_MON_INJECT_MAX_PENDING) {
+		atomic_dec(&g_monitor.inject_pending);
 		goto fail;
+	}
+
+	iw = kmalloc(sizeof(*iw), GFP_ATOMIC);
+	if (!iw) {
+		atomic_dec(&g_monitor.inject_pending);
+		goto fail;
+	}
 
 	iw->skb = skb;
 	INIT_WORK(&iw->work, dhd_mon_inject_work);
@@ -504,6 +528,7 @@ int dhd_monitor_init(void *dhd_pub)
 		g_monitor.inject_wq = create_singlethread_workqueue("dhd_mon_inject");
 		if (!g_monitor.inject_wq)
 			MON_PRINT("failed to create injection workqueue\n");
+		atomic_set(&g_monitor.inject_pending, 0);
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 		g_monitor.monitor_state = MONITOR_STATE_INIT;
 	}
