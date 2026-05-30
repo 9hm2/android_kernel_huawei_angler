@@ -67,6 +67,20 @@ int dhd_monitor_uninit(void);
 #define MON_PRINT(format, ...) printk("DHD-MON: %s " format, __func__, ##__VA_ARGS__)
 #define MON_TRACE MON_PRINT
 
+/* Per-frame (hot-path) logging. MON_PRINT is an unconditional printk; on the
+ * injection TX path it fires twice per frame, and with console=ttyHSL0,115200
+ * a flood (aireplay/mdk3) generates far more lines than a 115200-baud console
+ * can drain. The CPU then spins in console I/O under the printk lock, stops
+ * petting the watchdog, and the device takes a watchdog bite. Gate the
+ * per-frame prints behind a debug switch that is off by default; rare events
+ * (add/del/open/stop/errors) keep using MON_PRINT.
+ */
+#ifdef DHD_MON_HOTPATH_DEBUG
+#define MON_DBG MON_PRINT
+#else
+#define MON_DBG(format, ...) do {} while (0)
+#endif
+
 typedef struct monitor_interface {
 	int radiotap_enabled;
 	struct net_device* real_ndev;	/* The real interface that the monitor is on */
@@ -294,7 +308,7 @@ static int dhd_mon_if_subif_start_xmit(struct sk_buff *skb, struct net_device *n
 	struct dhd_inject_work *iw;
 #endif
 
-	MON_PRINT("enter\n");
+	MON_DBG("enter\n");
 
 	mon_if = ndev_to_monif(ndev);
 	if (mon_if == NULL || mon_if->real_ndev == NULL) {
@@ -318,7 +332,7 @@ static int dhd_mon_if_subif_start_xmit(struct sk_buff *skb, struct net_device *n
 	if (unlikely(skb->len < rtap_len + 10))
 		goto fail;
 
-	MON_PRINT("inject %d bytes (radiotap %d) via %s\n",
+	MON_DBG("inject %d bytes (radiotap %d) via %s\n",
 		skb->len, rtap_len, mon_if->real_ndev->name);
 
 #ifdef CONFIG_BCMDHD_MONITOR_MODE
