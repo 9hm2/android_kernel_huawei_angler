@@ -1427,6 +1427,19 @@ wl_cfg80211_add_virtual_iface(struct wiphy *wiphy,
 	/* Use primary I/F for sending cmds down to firmware */
 	primary_ndev = bcmcfg_to_prmry_ndev(cfg);
 
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	/* A native monitor interface does not depend on the STA driver being in
+	 * the READY state: it only needs the firmware/bus to be alive, which the
+	 * WLC_SET_MONITOR ioctl in dhd_set_monitor() validates (and rolls back
+	 * cleanly on failure). Handle it before the READY gate so that
+	 * "airmon-ng start wlan0" works even when wpa_supplicant has toggled the
+	 * primary interface down (which clears READY and otherwise returns
+	 * -ENODEV here).
+	 */
+	if (type == NL80211_IFTYPE_MONITOR)
+		return wl_cfg80211_add_monitor_if(cfg, (char *)name);
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
+
 	if (unlikely(!wl_get_drv_status(cfg, READY, primary_ndev))) {
 		WL_ERR(("device is not ready\n"));
 		return ERR_PTR(-ENODEV);
