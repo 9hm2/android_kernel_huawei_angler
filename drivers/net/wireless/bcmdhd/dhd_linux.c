@@ -3938,6 +3938,20 @@ static bool dhd_check_hang(struct net_device *net, dhd_pub_t *dhdp, int error)
 			dhd_dbg_send_urgent_evt(dhdp, NULL, 0);
 		}
 	}
+	/* Monitor-mode frame injection (aireplay/mdk3) hammers the control ring,
+	 * especially while hopping channels; an individual NEX_INJECT_FRAME ioctl
+	 * timing out does not mean the dongle is dead. As long as the bus has not
+	 * actually gone DOWN, treat such a transient -ETIMEDOUT as non-fatal so we
+	 * do not send a HANG and tear the whole chip down (which loses wlanXmon
+	 * and on this platform escalates to a reboot). Genuine bus-down still
+	 * falls through to recovery below, and STA-mode timeouts are unaffected.
+	 */
+	if (dhdp->monitor_type && error == -ETIMEDOUT &&
+		dhdp->busstate != DHD_BUS_DOWN) {
+		DHD_ERROR(("%s: monitor inject timeout, skipping HANG\n",
+			__FUNCTION__));
+		return FALSE;
+	}
 	if ((error == -ETIMEDOUT) || (error == -EREMOTEIO) ||
 		((dhdp->busstate == DHD_BUS_DOWN) && (!dhdp->dongle_reset))) {
 		DHD_ERROR(("%s: Event HANG send up due to  re=%d te=%d e=%d s=%d\n", __FUNCTION__,
