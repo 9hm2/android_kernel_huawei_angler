@@ -176,6 +176,20 @@ jobs:
           cp -f "$FW" "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin"
           ls -lh "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin"
 
+          # logstrs.bin lets the dhd driver decode a dongle trap's epc into a
+          # firmware function name (instead of a raw 0x2xxxxx address), which is
+          # what pinpoints the offending firmware routine under injection
+          # floods. The nexmon build emits it next to fw_bcmdhd.bin (or under
+          # the firmware source tree); bundle it if present.
+          LOGSTRS="$(find "$PATCHDIR" "$HOME/nexmon" -name 'logstrs.bin' 2>/dev/null | head -n1 || true)"
+          if [ -n "$LOGSTRS" ]; then
+            cp -f "$LOGSTRS" "$GITHUB_WORKSPACE/anykernel/firmware/logstrs.bin"
+            echo "bundled logstrs.bin from $LOGSTRS"
+            ls -lh "$GITHUB_WORKSPACE/anykernel/firmware/logstrs.bin"
+          else
+            echo "::warning::logstrs.bin not found; dongle traps will show raw epc only"
+          fi
+
       # ---- AnyKernel3 package -----------------------------------------------
       - name: Assemble AnyKernel3 zip
         run: |
@@ -190,7 +204,14 @@ jobs:
           if [ -f "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin" ]; then
             mkdir -p "$HOME/ak3/firmware"
             cp "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin" "$HOME/ak3/firmware/fw_bcmdhd.bin"
-            echo "nexmon firmware bundled."
+            # Bundle logstrs.bin too if the firmware step produced it (enables
+            # human-readable dongle-trap decoding on the device).
+            if [ -f "$GITHUB_WORKSPACE/anykernel/firmware/logstrs.bin" ]; then
+              cp "$GITHUB_WORKSPACE/anykernel/firmware/logstrs.bin" "$HOME/ak3/firmware/logstrs.bin"
+              echo "nexmon firmware + logstrs.bin bundled."
+            else
+              echo "nexmon firmware bundled (no logstrs.bin)."
+            fi
           else
             echo "::warning::No nexmon firmware bundled; zip will flash the kernel only."
           fi

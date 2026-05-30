@@ -91,6 +91,15 @@ install_nexmon_firmware() {
   chown 0.0 "$dst" 2>/dev/null;
   ui_print "  installed -> $dst";
 
+  # logstrs.bin (if bundled) lets the dhd driver translate a dongle-trap epc
+  # into a firmware function name, so injection-flood traps are diagnosable.
+  if [ -f "$akroot/firmware/logstrs.bin" ]; then
+    cp -f "$akroot/firmware/logstrs.bin" "$fwdir/logstrs.bin";
+    chmod 0644 "$fwdir/logstrs.bin";
+    chown 0.0 "$fwdir/logstrs.bin" 2>/dev/null;
+    ui_print "  installed -> $fwdir/logstrs.bin";
+  fi
+
   umount /vendor 2>/dev/null;
   umount /system 2>/dev/null;
 }
