@@ -1345,10 +1345,20 @@ wl_cfg80211_add_monitor_if(struct bcm_cfg80211 *cfg, char *name)
 	 * is started without the STA interface having been brought up - e.g.
 	 * "airmon-ng start wlan0" straight from a chroot, with wlan0 still down -
 	 * issue WLC_UP first so the dongle is live before we switch it to monitor.
+	 *
+	 * If WLC_UP fails the bus/firmware is genuinely down (e.g. the framework
+	 * just ran wl_android_wifi_off because airmon-ng killed wpa_supplicant).
+	 * Bail out here before allocating or registering any netdev: monitor mode
+	 * cannot work on a dead radio, and proceeding would later fail
+	 * WLC_SET_MONITOR and unregister the half-created device on a down bus,
+	 * which crashes the cfg80211 notifier.
 	 */
 	err = wldev_ioctl(primary_ndev, WLC_UP, &up, sizeof(up), true);
-	if (err < 0)
-		WL_ERR(("WLC_UP before monitor failed (%d), continuing\n", err));
+	if (err < 0) {
+		WL_ERR(("WLC_UP before monitor failed (%d); radio not ready\n",
+			err));
+		return ERR_PTR(-ENODEV);
+	}
 
 	/* The cfg80211 core (esp. on P2P_DEV_IF builds, where add_virtual_intf
 	 * returns a wireless_dev) dereferences ndev->ieee80211_ptr while the
