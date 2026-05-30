@@ -444,8 +444,20 @@ int cfg80211_set_monitor_channel(struct cfg80211_registered_device *rdev,
 {
 	if (!rdev->ops->set_monitor_channel)
 		return -EOPNOTSUPP;
+#ifndef CONFIG_NETHUNTER_ALLOW_NET_ADMIN_FROM_CHROOT
 	if (!cfg80211_has_monitors_only(rdev))
 		return -EBUSY;
+#else
+	/*
+	 * On fullmac shadow-monitor setups (e.g. bcmdhd, where wlanXmon shadows
+	 * the primary interface and the channel is applied on the single shared
+	 * radio via the firmware) the "all running interfaces are monitors"
+	 * requirement does not hold: the managed primary is up alongside the
+	 * monitor. Let the driver's set_monitor_channel handler decide instead
+	 * of refusing with -EBUSY, so airodump/aireplay can lock or hop the
+	 * capture channel without first having to tear the primary down.
+	 */
+#endif
 
 	return rdev_set_monitor_channel(rdev, chandef);
 }
