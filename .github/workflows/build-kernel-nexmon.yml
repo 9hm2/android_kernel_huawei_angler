@@ -171,9 +171,17 @@ jobs:
           # dongle (epc 0x216dfc -> PCIe linkdown / endless recovery). Add the
           # NULL guard newer chips already carry. Only applies to the affected
           # bcm4358 handler; no-op elsewhere or if already guarded.
-          IOCTL_SRC="$PATCHDIR/src/ioctl.c"
-          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && [ -f "$IOCTL_SRC" ]; then
-            bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-inject-null-check.sh" "$IOCTL_SRC"
+          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ]; then
+            NXP="$GITHUB_WORKSPACE/nexmon-patches"
+            # NEX_INJECT_FRAME: NULL-check the SKB allocation (flood -> trap).
+            [ -f "$PATCHDIR/src/ioctl.c" ] && \
+              bash "$NXP/bcm4358-inject-null-check.sh" "$PATCHDIR/src/ioctl.c"
+            # inject_frame(): bound the attacker-controlled radiotap length.
+            [ -f "$PATCHDIR/src/injection.c" ] && \
+              bash "$NXP/bcm4358-injection-len-check.sh" "$PATCHDIR/src/injection.c"
+            # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
+            [ -f "$PATCHDIR/src/monitormode.c" ] && \
+              bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
           fi
 
           ( cd "$PATCHDIR" && make )
