@@ -182,6 +182,12 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
+            # free() NULL guard: hook the heap free() at 0x18234c so a NULL
+            # buffer (besside-ng RX/event path under load) no longer traps the
+            # dongle (epc 0x182352). Only for the 300_14 build the offsets match.
+            if [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
+              bash "$NXP/bcm4358-install-free-guard.sh" "$PATCHDIR/src" "$NXP"
+            fi
           fi
 
           ( cd "$PATCHDIR" && make )
