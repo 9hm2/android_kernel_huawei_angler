@@ -347,14 +347,28 @@ static int dhd_mon_if_change_mac(struct net_device *ndev, void *addr)
 {
 	int ret = 0;
 	monitor_interface* mon_if;
+	struct sockaddr *sa = (struct sockaddr *)addr;
 
 	mon_if = ndev_to_monif(ndev);
 	if (mon_if == NULL || mon_if->real_ndev == NULL) {
 		MON_PRINT(" cannot find matched net dev, skip the packet\n");
-	} else {
-		MON_PRINT("enter, if name: %s, matched if name %s\n",
-		ndev->name, mon_if->real_ndev->name);
+		return -EINVAL;
 	}
+
+	MON_PRINT("enter, if name: %s, matched if name %s\n",
+		ndev->name, mon_if->real_ndev->name);
+
+	/* The monitor interface is a stand-alone radiotap shadow device; it does
+	 * not source frames under its own address, so we can honour a userspace
+	 * MAC change (macchanger, "ip link set ... address ...") locally by just
+	 * updating the netdev's hardware address. Without this the core only logs
+	 * and leaves dev_addr unchanged, so the tool reports "didn't actually
+	 * change".
+	 */
+	if (!is_valid_ether_addr(sa->sa_data))
+		return -EADDRNOTAVAIL;
+
+	memcpy(ndev->dev_addr, sa->sa_data, ETH_ALEN);
 	return ret;
 }
 
@@ -444,6 +458,15 @@ int dhd_add_monitor(char *name, struct net_device **new_ndev, void *wdev)
 		g_monitor.mon_if[idx].real_ndev = dhd_idx2net(g_monitor.dhd_pub, 0);
 		MON_PRINT("no name match for %s, defaulting to primary netdev\n", name);
 	}
+	/* Seed the monitor netdev's hardware address from the interface it
+	 * shadows, so it reports a sane MAC instead of all-zeroes (which also
+	 * makes "iw dev"/ifconfig show 00:00:..). Userspace can still override it
+	 * via dhd_mon_if_change_mac().
+	 */
+	if (g_monitor.mon_if[idx].real_ndev)
+		memcpy(ndev->dev_addr, g_monitor.mon_if[idx].real_ndev->dev_addr,
+			ETH_ALEN);
+
 	dhd_mon = (dhd_linux_monitor_t **)netdev_priv(ndev);
 	*dhd_mon = &g_monitor;
 	g_monitor.monitor_state = MONITOR_STATE_INTERFACE_ADDED;
