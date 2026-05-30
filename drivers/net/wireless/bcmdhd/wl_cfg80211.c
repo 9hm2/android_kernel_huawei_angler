@@ -196,6 +196,17 @@ static const struct ieee80211_iface_limit common_if_limits[] = {
 	.max = 1,
 	.types = BIT(NL80211_IFTYPE_ADHOC),
 	},
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	{
+	/* Allow a native monitor interface (airmon-ng / iw). Without this
+	 * limit the cfg80211 core rejects adding a monitor vif with
+	 * -EOPNOTSUPP during the interface-combination check, before the
+	 * driver's add_virtual_iface handler ever runs.
+	 */
+	.max = 1,
+	.types = BIT(NL80211_IFTYPE_MONITOR),
+	},
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 };
 #ifdef BCM4330_CHIP
 #define NUM_DIFF_CHANNELS 1
@@ -8049,6 +8060,16 @@ static s32 wl_setup_wiphy(struct wireless_dev *wdev, struct device *sdiofunc_dev
 #if !defined(WL_ENABLE_P2P_IF) && !defined(WL_CFG80211_P2P_DEV_IF)
 		| BIT(NL80211_IFTYPE_MONITOR)
 #endif /* !WL_ENABLE_P2P_IF && !WL_CFG80211_P2P_DEV_IF */
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+		/* Advertise monitor support unconditionally when native monitor
+		 * mode is built in. The stock define above hides it whenever P2P
+		 * interface support is enabled, which makes the cfg80211 core
+		 * reject monitor vifs with -EOPNOTSUPP (airmon-ng "operation not
+		 * supported"). The corresponding iface-combination limit is added
+		 * to common_if_limits[] under the same config.
+		 */
+		| BIT(NL80211_IFTYPE_MONITOR)
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 #if defined(WL_IFACE_COMB_NUM_CHANNELS) || defined(WL_CFG80211_P2P_DEV_IF)
 		| BIT(NL80211_IFTYPE_P2P_CLIENT)
 		| BIT(NL80211_IFTYPE_P2P_GO)
