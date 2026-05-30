@@ -81,6 +81,7 @@ typedef struct dhd_linux_monitor {
 #ifdef CONFIG_BCMDHD_MONITOR_MODE
 	struct workqueue_struct *inject_wq;	/* serializes frame injection */
 	atomic_t inject_pending;	/* frames queued but not yet sent to fw */
+	unsigned long inject_cooldown_until;	/* jiffies; drop injects until then */
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 } dhd_linux_monitor_t;
 
@@ -92,6 +93,14 @@ typedef struct dhd_linux_monitor {
  * crashing the chip. Drop frames past this watermark instead.
  */
 #define DHD_MON_INJECT_MAX_PENDING	16
+
+/* When an injection ioctl times out (-ETIMEDOUT/-110) the dongle is wedged
+ * for a while; hammering it with the frames still queued just produces a
+ * burst of follow-on errors and prolongs the stall. After such a failure,
+ * drop injects outright for this long so the firmware can recover before we
+ * resume feeding it.
+ */
+#define DHD_MON_INJECT_COOLDOWN_MS	200
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 static dhd_linux_monitor_t g_monitor;
@@ -131,6 +140,13 @@ static void dhd_mon_inject_work(struct work_struct *ws)
 	if (!dhdp || !dhdp->monitor_type)
 		goto out;
 
+	/* If a recent inject timed out the dongle is still recovering; skip the
+	 * ioctl entirely until the cooldown elapses so we do not pile more failed
+	 * commands onto a wedged firmware.
+	 */
+	if (time_before(jiffies, g_monitor.inject_cooldown_until))
+		goto out;
+
 	/* Build the NEX_INJECT_FRAME buffer: one header followed by the frame,
 	 * which already carries its radiotap header (type 1). The firmware copies
 	 * (frm->len - 4) bytes, so frm->len = framelen + 4. The firmware loop then
@@ -150,8 +166,15 @@ static void dhd_mon_inject_work(struct work_struct *ws)
 	memcpy(frm->data, skb->data, skb->len);
 
 	ret = dhd_wl_ioctl_cmd(dhdp, DHD_NEX_INJECT_FRAME, buf, buflen, TRUE, 0);
-	if (ret < 0)
+	if (ret < 0) {
 		MON_PRINT("NEX_INJECT_FRAME ioctl failed: %d\n", ret);
+		/* A timeout means the dongle is wedged; back off so the rest of
+		 * the queued burst is dropped instead of hammering it further.
+		 */
+		if (ret == -ETIMEDOUT)
+			g_monitor.inject_cooldown_until = jiffies +
+				msecs_to_jiffies(DHD_MON_INJECT_COOLDOWN_MS);
+	}
 
 	kfree(buf);
 out:
@@ -552,6 +575,7 @@ int dhd_monitor_init(void *dhd_pub)
 		if (!g_monitor.inject_wq)
 			MON_PRINT("failed to create injection workqueue\n");
 		atomic_set(&g_monitor.inject_pending, 0);
+		g_monitor.inject_cooldown_until = jiffies;
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 		g_monitor.monitor_state = MONITOR_STATE_INIT;
 	}
