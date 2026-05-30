@@ -393,6 +393,11 @@ int dhd_add_monitor(char *name, struct net_device **new_ndev, void *wdev)
 		((struct wireless_dev *)wdev)->netdev = ndev;
 		SET_NETDEV_DEV(ndev, wiphy_dev(((struct wireless_dev *)wdev)->wiphy));
 	}
+	/* Free via the core's unregister todo, not a manual free_netdev() after
+	 * unregister_netdevice(): under rtnl the unregister is only scheduled, so
+	 * an immediate free_netdev() hits BUG_ON(reg_state != UNREGISTERED).
+	 */
+	ndev->destructor = free_netdev;
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 	ret = register_netdevice(ndev);
@@ -473,7 +478,9 @@ int dhd_del_monitor(struct net_device *ndev)
 
 			g_monitor.mon_if[i].real_ndev = NULL;
 			unregister_netdevice(g_monitor.mon_if[i].mon_ndev);
+#ifndef CONFIG_BCMDHD_MONITOR_MODE
 			free_netdev(g_monitor.mon_if[i].mon_ndev);
+#endif /* !CONFIG_BCMDHD_MONITOR_MODE */
 			g_monitor.mon_if[i].mon_ndev = NULL;
 			g_monitor.monitor_state = MONITOR_STATE_INTERFACE_DELETED;
 			break;
