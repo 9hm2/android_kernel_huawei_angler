@@ -140,6 +140,14 @@ static void dhd_mon_inject_work(struct work_struct *ws)
 	if (!dhdp || !dhdp->monitor_type)
 		goto out;
 
+	/* During bus-down / firmware recovery (e.g. after a dongle trap from an
+	 * injection flood) every ioctl just returns "bus is down"; issuing them
+	 * only adds load and slows the devreset recovery. Drop the frame until the
+	 * bus is back in the data state.
+	 */
+	if (dhdp->busstate != DHD_BUS_DATA)
+		goto out;
+
 	/* If a recent inject timed out the dongle is still recovering; skip the
 	 * ioctl entirely until the cooldown elapses so we do not pile more failed
 	 * commands onto a wedged firmware.
