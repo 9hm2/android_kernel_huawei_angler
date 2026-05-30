@@ -6308,6 +6308,30 @@ change_bw:
 	return err;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
+/* nl80211's NL80211_CMD_SET_CHANNEL (used by "iw dev <mon> set channel" and
+ * by aireplay-ng/airodump to fix or hop the capture channel) is dispatched
+ * through ->set_monitor_channel on these kernels, not the legacy
+ * ->set_channel. Without it the monitor interface reports channel -1 and
+ * channel changes fail with -EOPNOTSUPP, which also makes injection tools
+ * thrash the firmware. Wire it up to the existing channel setter, applied on
+ * the primary interface the monitor shadows.
+ */
+static int
+wl_cfg80211_set_monitor_channel(struct wiphy *wiphy,
+	struct cfg80211_chan_def *chandef)
+{
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	struct net_device *ndev = bcmcfg_to_prmry_ndev(cfg);
+
+	if (!chandef || !chandef->chan)
+		return -EINVAL;
+
+	return wl_cfg80211_set_channel(wiphy, ndev, chandef->chan,
+		cfg80211_get_chandef_type(chandef));
+}
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0) */
+
 #ifdef WL_CFG80211_VSDB_PRIORITIZE_SCAN_REQUEST
 struct net_device *
 wl_cfg80211_get_remain_on_channel_ndev(struct bcm_cfg80211 *cfg)
@@ -7994,6 +8018,8 @@ static struct cfg80211_ops wl_cfg80211_ops = {
 	.change_bss = wl_cfg80211_change_bss,
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0))
 	.set_channel = wl_cfg80211_set_channel,
+#else
+	.set_monitor_channel = wl_cfg80211_set_monitor_channel,
 #endif
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 4, 0))
 	.set_beacon = wl_cfg80211_add_set_beacon,
