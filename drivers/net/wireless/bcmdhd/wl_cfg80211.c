@@ -1336,7 +1336,19 @@ wl_cfg80211_add_monitor_if(struct bcm_cfg80211 *cfg, char *name)
 	struct net_device *ndev = NULL;
 	struct wireless_dev *wdev = NULL;
 	dhd_pub_t *dhd = (dhd_pub_t *)(cfg->pub);
+	struct net_device *primary_ndev = bcmcfg_to_prmry_ndev(cfg);
+	s32 up = 1;
 	int err;
+
+	/* The firmware rejects WLC_SET_MONITOR with -1 unless the radio is up
+	 * (dhd_wl_ioctl drops every command while pub.up == 0). When monitor mode
+	 * is started without the STA interface having been brought up - e.g.
+	 * "airmon-ng start wlan0" straight from a chroot, with wlan0 still down -
+	 * issue WLC_UP first so the dongle is live before we switch it to monitor.
+	 */
+	err = wldev_ioctl(primary_ndev, WLC_UP, &up, sizeof(up), true);
+	if (err < 0)
+		WL_ERR(("WLC_UP before monitor failed (%d), continuing\n", err));
 
 	/* The cfg80211 core (esp. on P2P_DEV_IF builds, where add_virtual_intf
 	 * returns a wireless_dev) dereferences ndev->ieee80211_ptr while the
