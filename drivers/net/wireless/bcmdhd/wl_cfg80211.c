@@ -1340,18 +1340,28 @@ wl_cfg80211_add_monitor_if(struct bcm_cfg80211 *cfg, char *name)
 	s32 up = 1;
 	int err;
 
-	/* The firmware rejects WLC_SET_MONITOR with -1 unless the radio is up
-	 * (dhd_wl_ioctl drops every command while pub.up == 0). When monitor mode
-	 * is started without the STA interface having been brought up - e.g.
-	 * "airmon-ng start wlan0" straight from a chroot, with wlan0 still down -
-	 * issue WLC_UP first so the dongle is live before we switch it to monitor.
-	 *
-	 * If WLC_UP fails the bus/firmware is genuinely down (e.g. the framework
-	 * just ran wl_android_wifi_off because airmon-ng killed wpa_supplicant).
-	 * Bail out here before allocating or registering any netdev: monitor mode
-	 * cannot work on a dead radio, and proceeding would later fail
-	 * WLC_SET_MONITOR and unregister the half-created device on a down bus,
-	 * which crashes the cfg80211 notifier.
+	/* Monitor mode needs the firmware/radio live: dhd_wl_ioctl drops every
+	 * command (and WLC_SET_MONITOR returns -1) while the dongle is powered
+	 * down, which happens whenever the STA interface has never been brought
+	 * up - e.g. "airmon-ng start wlan0" issued straight from a chroot that
+	 * cannot do "ip link set wlan0 up" itself (no CAP_NET_ADMIN in its
+	 * context). Bring the primary interface up in-kernel here: dev_open()
+	 * runs the same ndo_open path as an ifconfig up, loading the firmware and
+	 * setting pub.up. We hold rtnl (the nl80211 add_virtual_intf path does),
+	 * which is all dev_open() requires.
+	 */
+	if (!(primary_ndev->flags & IFF_UP)) {
+		err = dev_open(primary_ndev);
+		if (err < 0)
+			WL_ERR(("dev_open(%s) before monitor failed (%d)\n",
+				primary_ndev->name, err));
+	}
+
+	/* With the interface up the dongle should be live; put it into WLC_UP so
+	 * WLC_SET_MONITOR is accepted. If this still fails the radio is genuinely
+	 * unavailable (e.g. firmware download failed); bail out before allocating
+	 * or registering any netdev, so we never run the teardown path on a dead
+	 * bus (which oopses the cfg80211 notifier).
 	 */
 	err = wldev_ioctl(primary_ndev, WLC_UP, &up, sizeof(up), true);
 	if (err < 0) {
