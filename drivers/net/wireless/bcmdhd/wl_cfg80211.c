@@ -6330,6 +6330,43 @@ wl_cfg80211_set_monitor_channel(struct wiphy *wiphy,
 	return wl_cfg80211_set_channel(wiphy, ndev, chandef->chan,
 		cfg80211_get_chandef_type(chandef));
 }
+
+/* nl80211 reports the interface channel ("iw dev <mon> info", and what
+ * airodump/aireplay read to learn the capture channel) via ->get_channel.
+ * Without it the monitor shows "channel -1" and tools refuse to operate
+ * ("Couldn't determine current channel ... apply a kernel patch"), even
+ * after a successful set. Query the live firmware chanspec and report it.
+ */
+static int
+wl_cfg80211_get_channel(struct wiphy *wiphy, struct wireless_dev *wdev,
+	struct cfg80211_chan_def *chandef)
+{
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	struct net_device *ndev = bcmcfg_to_prmry_ndev(cfg);
+	struct ieee80211_channel *chan;
+	enum ieee80211_band band;
+	u32 chanspec = 0;
+	u32 ctl_chan, freq;
+	s32 err;
+
+	err = wldev_iovar_getint(ndev, "chanspec", (s32 *)&chanspec);
+	if (err) {
+		WL_ERR(("get chanspec failed (%d)\n", err));
+		return err;
+	}
+	chanspec = wl_chspec_driver_to_host(chanspec);
+
+	ctl_chan = wf_chspec_ctlchan(chanspec);
+	band = CHSPEC_IS2G(chanspec) ? IEEE80211_BAND_2GHZ : IEEE80211_BAND_5GHZ;
+	freq = ieee80211_channel_to_frequency(ctl_chan, band);
+
+	chan = ieee80211_get_channel(wiphy, freq);
+	if (!chan)
+		return -EINVAL;
+
+	cfg80211_chandef_create(chandef, chan, NL80211_CHAN_NO_HT);
+	return 0;
+}
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0) */
 
 #ifdef WL_CFG80211_VSDB_PRIORITIZE_SCAN_REQUEST
@@ -8020,6 +8057,7 @@ static struct cfg80211_ops wl_cfg80211_ops = {
 	.set_channel = wl_cfg80211_set_channel,
 #else
 	.set_monitor_channel = wl_cfg80211_set_monitor_channel,
+	.get_channel = wl_cfg80211_get_channel,
 #endif
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 4, 0))
 	.set_beacon = wl_cfg80211_add_set_beacon,
