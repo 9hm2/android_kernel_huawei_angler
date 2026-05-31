@@ -263,13 +263,6 @@ jobs:
             echo "::warning::No nexmon firmware bundled; zip will flash the kernel only."
           fi
 
-          # Bundle the chroot extras (prebuilt udev hwdb.bin + README) so the
-          # installer can drop them into the Kali chroot.
-          if [ -d "$GITHUB_WORKSPACE/anykernel/chroot-extras" ]; then
-            cp -r "$GITHUB_WORKSPACE/anykernel/chroot-extras" "$HOME/ak3/chroot-extras"
-            echo "bundled chroot-extras:"; ls -l "$HOME/ak3/chroot-extras"
-          fi
-
           STAMP="$(date +%Y%m%d)-$(echo "$GITHUB_SHA" | cut -c1-8)"
           ZIP="angler-nethunter-nexmon-${STAMP}.zip"
           ( cd "$HOME/ak3" && zip -r9 "$GITHUB_WORKSPACE/$ZIP" . -x ".git*" -x "*.zip" )
@@ -277,12 +270,30 @@ jobs:
           echo "TAG_NAME=build-${STAMP}" >> "$GITHUB_ENV"
           ls -lh "$GITHUB_WORKSPACE/$ZIP"
 
+          # Stage the prebuilt udev hwdb.bin as a standalone asset (NOT bundled
+          # in the flashable zip): install it manually in the chroot via
+          # curl/wget. See anykernel/chroot-extras/README.txt.
+          if [ -f "$GITHUB_WORKSPACE/anykernel/chroot-extras/hwdb.bin" ]; then
+            cp "$GITHUB_WORKSPACE/anykernel/chroot-extras/hwdb.bin" \
+               "$GITHUB_WORKSPACE/hwdb.bin"
+            ls -lh "$GITHUB_WORKSPACE/hwdb.bin"
+          else
+            echo "::warning::hwdb.bin not staged; lsusb name lookup asset unavailable"
+          fi
+
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
           if-no-files-found: error
+
+      - name: Upload udev hwdb.bin
+        uses: actions/upload-artifact@v4
+        with:
+          name: hwdb.bin
+          path: hwdb.bin
+          if-no-files-found: warn
 
       # Publish the flashable zip to the repo's Releases page so it can be
       # downloaded directly (https://github.com/<owner>/<repo>/releases).
@@ -303,5 +314,17 @@ jobs:
             Flash the attached zip in TWRP. The installer flashes the kernel
             and installs the bundled `fw_bcmdhd.bin` (a backup of the stock
             firmware is kept as `fw_bcmdhd.bin.stock`).
-          files: ${{ env.ZIP_NAME }}
-          fail_on_unmatched_files: true
+
+            `hwdb.bin` is attached separately (it is NOT in the zip). It fixes
+            `lsusb` ("unable to initialize usb spec") inside the Kali chroot.
+            Install it manually from the chroot, e.g.:
+
+                wget -O /etc/udev/hwdb.bin \
+                  https://github.com/${{ github.repository }}/releases/download/${{ env.TAG_NAME }}/hwdb.bin
+
+            (or `curl -L -o /etc/udev/hwdb.bin <url>`). See
+            anykernel/chroot-extras/README.txt.
+          files: |
+            ${{ env.ZIP_NAME }}
+            hwdb.bin
+          fail_on_unmatched_files: false
