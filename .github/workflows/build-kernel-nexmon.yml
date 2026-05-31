@@ -52,6 +52,7 @@ jobs:
             bc bison build-essential ca-certificates cpio flex git gawk \
             kmod libssl-dev libncurses5-dev wget xz-utils zip unzip rsync \
             python3 \
+            systemd hwdata usbutils \
             libc6:i386 libstdc++6:i386 zlib1g:i386
 
       # ---- Cross toolchains (AOSP prebuilt standalone GCC 4.9) --------------
@@ -216,6 +217,26 @@ jobs:
             echo "::warning::logstrs.bin not found; dongle traps will show raw epc only"
           fi
 
+      # ---- udev hwdb for the Kali chroot ------------------------------------
+      # Modern usbutils `lsusb` resolves names via libudev's hwdb
+      # (udev_hwdb_new), but the Nexus 6P's systemd 260 cannot build hwdb.bin
+      # on its 3.10 kernel (systemd-hwdb update fails to read its hwdb.d dirs:
+      # "Protocol driver not attached"). libudev there can still mmap a
+      # prebuilt file, so generate it on the runner and bundle it.
+      - name: Generate udev hwdb.bin for the Kali chroot
+        run: |
+          set -euo pipefail
+          sudo systemd-hwdb update
+          mkdir -p anykernel/chroot-extras
+          if [ -f /etc/udev/hwdb.bin ]; then
+            cp /etc/udev/hwdb.bin anykernel/chroot-extras/hwdb.bin
+          elif [ -f /usr/lib/udev/hwdb.bin ]; then
+            cp /usr/lib/udev/hwdb.bin anykernel/chroot-extras/hwdb.bin
+          else
+            echo "::warning::hwdb.bin was not produced; lsusb name lookup unavailable"
+          fi
+          ls -l anykernel/chroot-extras/ || true
+
       # ---- AnyKernel3 package -----------------------------------------------
       - name: Assemble AnyKernel3 zip
         run: |
@@ -240,6 +261,13 @@ jobs:
             fi
           else
             echo "::warning::No nexmon firmware bundled; zip will flash the kernel only."
+          fi
+
+          # Bundle the chroot extras (prebuilt udev hwdb.bin + README) so the
+          # installer can drop them into the Kali chroot.
+          if [ -d "$GITHUB_WORKSPACE/anykernel/chroot-extras" ]; then
+            cp -r "$GITHUB_WORKSPACE/anykernel/chroot-extras" "$HOME/ak3/chroot-extras"
+            echo "bundled chroot-extras:"; ls -l "$HOME/ak3/chroot-extras"
           fi
 
           STAMP="$(date +%Y%m%d)-$(echo "$GITHUB_SHA" | cut -c1-8)"

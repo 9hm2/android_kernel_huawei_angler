@@ -106,4 +106,31 @@ install_nexmon_firmware() {
 
 install_nexmon_firmware;
 
+## udev hwdb for the Kali chroot
+# Modern usbutils `lsusb` resolves names via libudev's hwdb (udev_hwdb_new),
+# which needs /etc/udev/hwdb.bin. systemd-hwdb cannot build that file on this
+# 3.10 kernel, so lsusb fails with "unable to initialize usb spec". Drop the
+# CI-prebuilt hwdb.bin into any Kali chroot we can find under /data.
+install_chroot_hwdb() {
+  local akroot="${AKHOME:-$home}";
+  local src="$akroot/chroot-extras/hwdb.bin";
+  local found=0 root;
+
+  [ -f "$src" ] || return 0;
+
+  ui_print " "; ui_print "Installing udev hwdb.bin into the Kali chroot...";
+  mount /data 2>/dev/null;
+  for root in /data/local/nhsystem/*/ /data/local/nhsystem/kalifs*/; do
+    [ -d "${root}etc" ] || continue;
+    mkdir -p "${root}etc/udev" 2>/dev/null;
+    if cp -f "$src" "${root}etc/udev/hwdb.bin" 2>/dev/null; then
+      chmod 0644 "${root}etc/udev/hwdb.bin" 2>/dev/null;
+      ui_print "  installed -> ${root}etc/udev/hwdb.bin";
+      found=1;
+    fi
+  done
+  [ "$found" = 0 ] && ui_print "  no Kali chroot found - copy chroot-extras/hwdb.bin to /etc/udev/ by hand";
+}
+install_chroot_hwdb;
+
 ## end install
