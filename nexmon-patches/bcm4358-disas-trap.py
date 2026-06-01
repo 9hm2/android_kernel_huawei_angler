@@ -138,6 +138,46 @@ def scan_poison(blob):
         print("  (no incrementing-word poison table found as data)")
 
 
+def dump_template(blob, ram_lo, ram_hi):
+    """Print the raw words of the poison/init template region."""
+    print("=== context-init template 0x%06x..0x%06x ===" % (ram_lo, ram_hi))
+    for a in range(ram_lo, ram_hi, 4):
+        off = a - RAMSTART
+        if off < 0 or off + 4 > len(blob):
+            continue
+        w = int.from_bytes(blob[off:off+4], "little")
+        print("  0x%06x: %08x" % (a, w))
+
+
+def scan_xrefs(md, blob, ram_lo, ram_hi, ctx_before=40):
+    """Find literal-pool words pointing into [ram_lo, ram_hi] (the template)
+    and disassemble the code just above each -- that is the routine that
+    loads the template address, i.e. the context/thread init that seeds the
+    poison and is the real suspect.
+    """
+    print("=== xrefs to template 0x%06x..0x%06x ===" % (ram_lo, ram_hi))
+    found = 0
+    n = len(blob)
+    i = 0
+    while i + 4 <= n and found < 12:
+        w = int.from_bytes(blob[i:i+4], "little")
+        if ram_lo <= w < ram_hi:
+            litram = RAMSTART + i
+            print("  literal 0x%06x -> 0x%06x (loads template):" %
+                  (litram, w))
+            # disassemble a window ending at the literal (code is above it)
+            cstart = max(0, i - ctx_before) & ~1
+            for insn in md.disasm(blob[cstart:i], RAMSTART + cstart):
+                print("     0x%06x  %-10s %s" % (
+                    insn.address, insn.mnemonic, insn.op_str))
+            found += 1
+        i += 4
+    if not found:
+        print("  (no direct literal-pool xref found; template may be"
+              " reached via computed/base+offset addressing)")
+
+
+
 
 def main():
     if len(sys.argv) < 2:
@@ -169,6 +209,17 @@ def main():
 
     print()
     scan_poison(blob)
+
+    # The poison data scan located the context-init template at ~0x1821a0
+    # (matches the trapped registers exactly: r1=01010101..r7=07070707,
+    # lr=0e0e0e0e). Dump it and find who loads its address -- that routine is
+    # the thread/context initializer that seeds the poison, i.e. the real
+    # suspect for the WPS-association control-flow trap.
+    TPL_LO, TPL_HI = 0x182190, 0x1821e0
+    print()
+    dump_template(blob, TPL_LO, TPL_HI)
+    print()
+    scan_xrefs(md, blob, TPL_LO, TPL_HI)
 
 
 if __name__ == "__main__":
