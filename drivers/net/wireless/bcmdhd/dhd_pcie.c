@@ -1416,14 +1416,17 @@ dhdpcie_checkdied(dhd_bus_t *bus, char *data, uint size)
 			 *
 			 * On a stack/context-corruption trap (e.g. the WPS/EAPOL
 			 * association path on the BCM4358 monitor firmware) the epc
-			 * and lr come back as poison (0x0e0e0e0e style fill), so the
-			 * single register snapshot above cannot tell us which routine
-			 * jumped into the weeds. The stack pointer (tr.r13), however,
-			 * still points at a live dongle stack. Walk a window of it and
-			 * print the words that look like firmware code addresses --
-			 * those are the saved LRs of the frames that ran *before* the
-			 * corruption, i.e. the real call chain to feed back into the
-			 * RAM disassembly. Bounded read; only runs once per trap.
+			 * and lr come back as poison (0x0e0e0e0e style fill). The
+			 * live window right at sp turned out to be all poison too,
+			 * which means a whole saved CPU context was reloaded from a
+			 * fill-pattern region: the real overflow happened earlier,
+			 * elsewhere. So scan a WIDE window upward from sp (the stack
+			 * grows down, older frames sit at higher addresses toward the
+			 * 0x240000 stack top) in chunks, and report (a) where the
+			 * poison fill ends, and (b) any surviving firmware code
+			 * addresses (saved LRs) beyond it -- the real call chain to
+			 * feed back into the RAM disassembly. Bounded reads; runs
+			 * once per trap; diagnostic only.
 			 */
 			{
 				uint32 sp = ltoh32(tr.r13);
@@ -1431,33 +1434,74 @@ dhdpcie_checkdied(dhd_bus_t *bus, char *data, uint size)
 				 * 0x180000 up; treat 0x1000..0x2A0000 as plausible
 				 * code (Thumb return addrs have bit0 set).
 				 */
-#define DHD_FWCODE_MIN	0x00001000
-#define DHD_FWCODE_MAX	0x002A0000
-#define DHD_TRAP_STACK_WORDS	64
-				uint32 sw[DHD_TRAP_STACK_WORDS];
-				int si;
+#define DHD_FWCODE_MIN		0x00001000
+#define DHD_FWCODE_MAX		0x002A0000
+#define DHD_TRAP_STACK_TOP	0x00240000	/* dongle stack ceiling */
+#define DHD_TRAP_SCAN_BELOW	0x00001000	/* also look 4K below sp */
+#define DHD_TRAP_CHUNK_WORDS	64		/* 256B per PCIe read   */
+				uint32 sw[DHD_TRAP_CHUNK_WORDS];
+				uint32 a, start, prev = 0xFFFFFFFF;
+				int si, found = 0, poison_run = 0;
 
-				/* Print directly (not into the small bounded strbuf,
-				 * which the trap header would already truncate), the
-				 * same way the console dump below uses printf().
+				/* sp sits just under the stack top, so sp..top is
+				 * tiny (and was all poison). The frames that were
+				 * live during the corrupting call sit just BELOW sp
+				 * (freshly vacated scratch), so start the scan there.
 				 */
-				if (sp >= DHD_FWCODE_MIN && sp < 0x00400000 &&
-				    dhdpcie_bus_membytes(bus, FALSE, sp,
-				        (uint8 *)sw, sizeof(sw)) >= 0) {
-					printf("Trap stack walk from sp 0x%x "
-					    "(candidate return addresses):\n", sp);
-					for (si = 0; si < DHD_TRAP_STACK_WORDS; si++) {
-						uint32 w = ltoh32(sw[si]);
-						if (w >= DHD_FWCODE_MIN &&
-						    w < DHD_FWCODE_MAX && (w & 1)) {
-							printf("  [sp+0x%02x] 0x%x\n",
-							    si * 4, w & ~1);
+				start = (sp > DHD_TRAP_SCAN_BELOW) ?
+				        (sp - DHD_TRAP_SCAN_BELOW) : DHD_FWCODE_MIN;
+				if (sp >= DHD_FWCODE_MIN && sp < DHD_TRAP_STACK_TOP) {
+					printf("Trap stack scan 0x%x -> 0x%x (sp 0x%x):\n",
+					    start, (uint32)DHD_TRAP_STACK_TOP, sp);
+					for (a = start; a < DHD_TRAP_STACK_TOP;
+					     a += sizeof(sw)) {
+						if (dhdpcie_bus_membytes(bus, FALSE, a,
+						    (uint8 *)sw, sizeof(sw)) < 0)
+							break;
+						for (si = 0; si < DHD_TRAP_CHUNK_WORDS;
+						     si++) {
+							uint32 w = ltoh32(sw[si]);
+							uint32 at = a + si * 4;
+
+							/* Detect a contiguous fill
+							 * (poison) run and report just
+							 * its end, not every word.
+							 */
+							if (w == prev) {
+								poison_run++;
+								prev = w;
+								continue;
+							}
+							if (poison_run >= 3) {
+								printf("  [0x%x] end of "
+								    "0x%x fill (%d words)\n",
+								    at, prev,
+								    poison_run + 1);
+							}
+							poison_run = 0;
+							prev = w;
+
+							if (w >= DHD_FWCODE_MIN &&
+							    w < DHD_FWCODE_MAX &&
+							    (w & 1)) {
+								printf("  [0x%x] LR? "
+								    "0x%x\n", at,
+								    w & ~1);
+								if (++found >= 24)
+									goto stackdone;
+							}
 						}
 					}
+stackdone:
+					if (!found)
+						printf("  (no surviving return "
+						    "addresses found)\n");
 				}
 #undef DHD_FWCODE_MIN
 #undef DHD_FWCODE_MAX
-#undef DHD_TRAP_STACK_WORDS
+#undef DHD_TRAP_STACK_TOP
+#undef DHD_TRAP_SCAN_BELOW
+#undef DHD_TRAP_CHUNK_WORDS
 			}
 
 			addr =  bus->pcie_sh->console_addr + OFFSETOF(hnd_cons_t, log);
