@@ -199,6 +199,17 @@ jobs:
             echo "Patch dir contents:"; ls -lh "$PATCHDIR"
             exit 1
           fi
+
+          # Binary (address-based) patch applied to the LINKED firmware, after
+          # make: defuse the WPS state-machine panic at 0x18554a so a reaver/
+          # bully attack no longer traps the dongle (epc 0x0e0e0e10). Verifies
+          # the target is `bl 0x182170` before touching anything; safe no-op if
+          # the layout differs. Only for the 300_14 build the offsets match.
+          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
+             [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
+            bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-wps-assert-defuse.sh" "$FW"
+          fi
+
           mkdir -p "$GITHUB_WORKSPACE/anykernel/firmware"
           cp -f "$FW" "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin"
           ls -lh "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin"
