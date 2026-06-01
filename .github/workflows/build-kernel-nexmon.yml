@@ -203,6 +203,18 @@ jobs:
           cp -f "$FW" "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin"
           ls -lh "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin"
 
+          # Disassemble the RAM firmware around the call chain recovered from
+          # the reaver/WPS control-flow trap (driver stack scan in dhd_pcie.c).
+          # This turns the raw saved-LR addresses into annotated Thumb-2 so the
+          # corrupting routine can be pinpointed and hooked. Diagnostic only;
+          # prints into the build log, never fails the build.
+          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ]; then
+            pip3 install --quiet capstone || echo "::warning::capstone install failed"
+            python3 "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-disas-trap.py" \
+              "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin" \
+              || echo "::warning::trap disassembly step failed (non-fatal)"
+          fi
+
           # logstrs.bin lets the dhd driver decode a dongle trap's epc into a
           # firmware function name (instead of a raw 0x2xxxxx address), which is
           # what pinpoints the offending firmware routine under injection
