@@ -1412,6 +1412,54 @@ dhdpcie_checkdied(dhd_bus_t *bus, char *data, uint size)
 			ltoh32(tr.r0), ltoh32(tr.r1), ltoh32(tr.r2), ltoh32(tr.r3),
 			ltoh32(tr.r4), ltoh32(tr.r5), ltoh32(tr.r6), ltoh32(tr.r7));
 
+			/* Recover the firmware call chain on a control-flow trap.
+			 *
+			 * On a stack/context-corruption trap (e.g. the WPS/EAPOL
+			 * association path on the BCM4358 monitor firmware) the epc
+			 * and lr come back as poison (0x0e0e0e0e style fill), so the
+			 * single register snapshot above cannot tell us which routine
+			 * jumped into the weeds. The stack pointer (tr.r13), however,
+			 * still points at a live dongle stack. Walk a window of it and
+			 * print the words that look like firmware code addresses --
+			 * those are the saved LRs of the frames that ran *before* the
+			 * corruption, i.e. the real call chain to feed back into the
+			 * RAM disassembly. Bounded read; only runs once per trap.
+			 */
+			{
+				uint32 sp = ltoh32(tr.r13);
+				/* BCM4358: ROM below 0x180000, downloaded RAM from
+				 * 0x180000 up; treat 0x1000..0x2A0000 as plausible
+				 * code (Thumb return addrs have bit0 set).
+				 */
+#define DHD_FWCODE_MIN	0x00001000
+#define DHD_FWCODE_MAX	0x002A0000
+#define DHD_TRAP_STACK_WORDS	64
+				uint32 sw[DHD_TRAP_STACK_WORDS];
+				int si;
+
+				/* Print directly (not into the small bounded strbuf,
+				 * which the trap header would already truncate), the
+				 * same way the console dump below uses printf().
+				 */
+				if (sp >= DHD_FWCODE_MIN && sp < 0x00400000 &&
+				    dhdpcie_bus_membytes(bus, FALSE, sp,
+				        (uint8 *)sw, sizeof(sw)) >= 0) {
+					printf("Trap stack walk from sp 0x%x "
+					    "(candidate return addresses):\n", sp);
+					for (si = 0; si < DHD_TRAP_STACK_WORDS; si++) {
+						uint32 w = ltoh32(sw[si]);
+						if (w >= DHD_FWCODE_MIN &&
+						    w < DHD_FWCODE_MAX && (w & 1)) {
+							printf("  [sp+0x%02x] 0x%x\n",
+							    si * 4, w & ~1);
+						}
+					}
+				}
+#undef DHD_FWCODE_MIN
+#undef DHD_FWCODE_MAX
+#undef DHD_TRAP_STACK_WORDS
+			}
+
 			addr =  bus->pcie_sh->console_addr + OFFSETOF(hnd_cons_t, log);
 			if ((rv = dhdpcie_bus_membytes(bus, FALSE, addr,
 				(uint8 *)&console_ptr, sizeof(console_ptr))) < 0)
