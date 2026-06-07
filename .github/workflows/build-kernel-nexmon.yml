@@ -217,12 +217,12 @@ jobs:
           if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
              [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
             bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-wps-assert-defuse.sh" "$FW"
-            # EAPOL full-frame to monitor: in the monitor-mode RX branch, stop
-            # EAPOL (0x888e) entering the special handler that emits the fixed
-            # ~96-byte stub, so it takes the normal full-length monitor path
-            # (fixes the 90-byte handshake truncation). Rewrites the 4-byte
-            # movw r3,#0x888e at 0x1a3356 to movw r3,#0; verifies first.
-            bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-eapol-monitor-fullframe.sh" "$FW"
+            # NOTE: the EAPOL full-frame patch (bcm4358-eapol-monitor-fullframe.sh,
+            # 0x1a3356) is NOT applied — on-device testing proved it ineffective
+            # (EAPOL stayed at skb->len=114), i.e. 0x1a3356 is on a stats/marker
+            # path, not the truncating copy. Kept in-tree for the record; will be
+            # re-enabled once the real monitor EAPOL copy site is confirmed
+            # dynamically. See nexmon-patches/EAPOL-TRUNCATION-RE.md.
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/anykernel/firmware"

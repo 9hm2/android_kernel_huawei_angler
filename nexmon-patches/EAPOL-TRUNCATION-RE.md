@@ -208,3 +208,42 @@ in monitor mode, so the phone's WPA client is unaffected and no separate gate
 is needed. The 0x88b4 special case is left intact. Implemented as a verified,
 idempotent 4-byte binary patch (bcm4358-eapol-monitor-fullframe.sh) applied
 to the linked firmware after make.
+
+## STATUS: v2 fix (0x1a3356) ALSO ineffective — disabled
+
+On-device (uname 3.10.73-...-89ede527, DHD-MON-BUILD v2 confirmed flashed),
+EAPOL stayed at skb->len=114. So 0x1a3356 is NOT the truncation site either —
+its surrounding code (0x1a32ea region) is RX statistics counters
+([+0x40]/[+0x44] increments) and a 0x23d68 stat/notify call, not the frame
+copy. The 0x1a3356 binary patch is kept in-tree for the record but is NO
+LONGER applied by the CI.
+
+### Candidate sites tried and DISPROVEN (all static guesses, all wrong)
+
+1. 0x19ad06 — host 802.3 EAPOL forwarder (0x19ace8). Not run in monitor mode
+   (the firmware branches to the monitor path at 0x1a31b4/0x1a320e on
+   wlc->monitor before reaching it).
+2. 0x1a3356 — `movw r3,#0x888e` inside the monitor branch, but on the RX
+   statistics path (0x23d68 is a stat/notify, ROM), not the copy.
+3. 0x19bb0a — `movw r1,#0x888e` after an MTU (0x5dc) check; sets a 0x10 flag
+   in [r4,#0x18]. Plausible classifier, but the function (entry 0x19b9de)
+   does NOT read wlc->monitor and no bit-0x10 consumer that truncates was
+   found, so it is unproven.
+
+### Why static analysis stalled
+
+The monitor RX→clone path is struct/table-driven: the 90→96 size is never a
+literal (#0x60/#0x5a absent), wlc->monitor (offset 0x208) is read at
+0x19a244/0x1a31b4/0x1a320e/0x1a3d26/0x1a649e/0x1a6d04 but the actual EAPOL
+clone shortening is reached indirectly. Three guessed patch sites were each
+disproven by the on-device DHD-MON-EAPOL probe (skb->len stayed 114).
+
+### Correct next approach (dynamic, not more guessing)
+
+Find the call that hands the monitor tap its packet for EAPOL and read the
+length THERE, rather than guessing the constant. Concretely: add a driver
+probe that, for an EAPOL monitor skb, also dumps a few words of firmware
+shared memory / the rx descriptor around the source buffer, or bisect by
+patching each wlc->monitor consumer (0x1a31b4 vs 0x1a320e vs 0x1a3d26 …) one
+at a time behind the build marker, observing which one changes skb->len.
+Only patch once a single change is shown to move skb->len off 114.
