@@ -199,8 +199,8 @@ jobs:
             # evidence (Key MIC zero past ~86B), the firmware does not retain the
             # foreign unprotected EAPOL payload in monitor-reachable RAM -- only
             # the header+nonces. See EAPOL-TRUNCATION-RE.md. Kept for reference.
-            #[ -f "$PATCHDIR/src/monitormode.c" ] && \
-            #  bash "$NXP/bcm4358-monitor-eapol-snoopcap.sh" "$PATCHDIR/src/monitormode.c"
+            [ -f "$PATCHDIR/src/monitormode.c" ] && \
+              bash "$NXP/bcm4358-monitor-eapol-snoopcap.sh" "$PATCHDIR/src/monitormode.c"
             # free() NULL guard: hook the heap free() at 0x18234c so a NULL
             # buffer (besside-ng RX/event path under load) no longer traps the
             # dongle (epc 0x182352). Only for the 300_14 build the offsets match.
