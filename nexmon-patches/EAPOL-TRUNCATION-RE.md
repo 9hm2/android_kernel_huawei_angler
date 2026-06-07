@@ -126,9 +126,55 @@ receives the complete EAPOL-Key frame. Then a handshake captured on the
 internal chip becomes complete and crackable — the ACK-independent,
 fullmac-correct path to WPA2 on the on-board radio.
 
+## On-device confirmation (DHD-MON-EAPOL + DHD-MON-CENSUS probes)
+
+A diagnostic in `dhd_rx_mon_pkt` (dhd_linux.c) printed, per monitor frame,
+the firmware-delivered `skb->len`:
+
+- **EAPOL probe:** every EAPOL is `skb->len=114` (= 24 radiotap + 90 on-air),
+  `avail_after_hdr=52`, regardless of `declared_len` 95/119/151. The driver
+  receives it already truncated -> the cut is 100% in firmware.
+- **Census probe:** other frames on the same monitor path arrive FULL —
+  beacons 245/281, encrypted QoS-data (fc0=0x88, fc1=0x42) 1353/1358 and up
+  to **1904** bytes. Only the cleartext EAPOL is pinned to 114.
+
+So the truncation is **EAPOL-specific**, not a global per-frame or
+first-RX-fragment cap, and the nexmon `wl_monitor` hook itself is fine (it
+delivers 1904-byte frames intact). The fix is therefore feasible and should
+be **gated on monitor mode** (`wl->wlc->monitor & 0xFF`) so the phone's own
+WPA client — which legitimately needs the firmware to intercept its EAPOL —
+is unaffected.
+
+### The captured stub is zero-filled (data is gone)
+
+The tail of a cut EAPOL frame is `00 00 00 ...`, not EAPOL continuation, and
+the trailing 4 bytes are not a valid FCS. So the monitor receives a SEPARATE
+fixed ~96-byte zero-filled buffer, not the original packet with a short len.
+Consequently the fix cannot just restore `p->len` in `wl_monitor` — the bytes
+are not there. The firmware must be made to deliver EAPOL to the monitor via
+the same full path as encrypted data (i.e. skip the EAPOL-specific short
+staging) when monitor mode is active.
+
+### Branch located
+
+In the RX handler `0x1a560c`, the SNAP/LLC handling splits at:
+
+    0x1a58a0  bl 0x19a182        ; ethertype-intercept classifier
+    0x1a58a4  cbz r0, 0x1a58c2   ; r0!=0 (intercept) -> SHORT path 0x1a58c2
+    0x1a58c2  ldrh r1,[sp,#0xc2]; subs r1,#6   ; 6-byte (EAPOL/AARP/IPX) strip
+    0x1a58d8  ...               ; FULL/normal path (14-byte LLC strip)
+
+`0x19a182` returns nonzero for the intercepted ethertypes. This is the host
+802.3 conversion split, not yet proven to be the exact instruction that sizes
+the 96-byte monitor stub (no `#0x60`/`#0x5a`/`#0x38` immediate exists; the
+size is structural). Pinpointing the store that sets the 96-byte stub length
+needs one more on-device probe (log the rx pkt pointer/len at the EAPOL
+staging vs. the value handed to `wl_monitor`), then a monitor-gated HookPatch
+there.
+
 ## Workaround until the firmware fix lands
 
 PMKID is also affected (it lives in the M1 key-data, past the cut), so the
 internal chip cannot currently feed hashcat a usable handshake **or** PMKID.
-Use the external rtl88xxau for handshake/PMKID capture, or capture from a
-device whose driver does not truncate EAPOL, until the cap above is patched.
+Use the external rtl88xxau for handshake/PMKID capture until the cap is
+patched.
