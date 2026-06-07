@@ -2929,25 +2929,44 @@ dhd_mon_eapol_reinject(dhd_pub_t *dhdp, dhd_if_t *ifp, wl_event_msg_t *event,
 	struct net_device *mon_ndev;
 	struct ieee80211_radiotap_header *rtap;
 	struct sk_buff *skb;
-	uint8 *payload = (uint8 *)data;
-	uint32 dlen;
+	uint8 *raw = (uint8 *)data;
+	uint8 *payload;
+	uint32 rawlen, dlen;
+	bool have_eth_hdr;
+	const uint8 *da, *sa, *bssid;
 	uint8 *p;
 
 	if (!ifp || !ifp->net || !data)
 		return;
 
-	dlen = ntoh32(event->datalen);
-	if (dlen < 4 || dlen > 2048)	/* sanity: a real EAPOL frame, not junk */
+	rawlen = ntoh32(event->datalen);
+	/* sanity: a real EAPOL-Key handshake frame is ~95+ bytes; the floor also
+	 * keeps the 16-byte format log below safely in-bounds. */
+	if (rawlen < 32 || rawlen > 2048)
 		return;
 
 	/* The event payload may or may not carry a leading 14-byte ethernet
-	 * header. If it does (ethertype 0x888E at offset 12), strip it so we copy
-	 * only the 802.1X portion beneath our own LLC/SNAP; otherwise it is already
-	 * the raw 802.1X body.
+	 * header (dst+src+0x888E). When it does, those are the REAL endpoints of
+	 * the handshake -- which matters for passive capture of a FOREIGN client's
+	 * EAPOL, where neither MAC is ours: we must label the rebuilt frame with
+	 * the frame's own addresses, not our STA. When it does not, the firmware
+	 * handed us the raw 802.1X body for a frame our own STA received, so our
+	 * MAC is the receiver and event->addr is the AP.
 	 */
-	if (dlen >= ETHER_HDR_LEN && payload[12] == 0x88 && payload[13] == 0x8E) {
-		payload += ETHER_HDR_LEN;
-		dlen    -= ETHER_HDR_LEN;
+	have_eth_hdr = (rawlen >= ETHER_HDR_LEN &&
+			raw[12] == 0x88 && raw[13] == 0x8E);
+	if (have_eth_hdr) {
+		da      = &raw[0];			/* receiver  */
+		sa      = &raw[6];			/* transmitter */
+		bssid   = &raw[6];			/* best guess: the transmitter */
+		payload = raw + ETHER_HDR_LEN;
+		dlen    = rawlen - ETHER_HDR_LEN;
+	} else {
+		da      = (const uint8 *)&dhdp->mac;	/* our STA received it */
+		sa      = (const uint8 *)&event->addr;	/* the AP */
+		bssid   = (const uint8 *)&event->addr;
+		payload = raw;
+		dlen    = rawlen;
 	}
 
 	mon_ndev = dhd_mon_lookup_dev(ifp->net);
@@ -2968,14 +2987,17 @@ dhd_mon_eapol_reinject(dhd_pub_t *dhdp, dhd_if_t *ifp, wl_event_msg_t *event,
 	memset(rtap, 0, sizeof(*rtap));
 	rtap->it_len = cpu_to_le16(sizeof(*rtap));
 
-	/* 802.11 Data header, FromDS (AP -> our STA) */
+	/* 802.11 Data header. No ToDS/FromDS so the addresses read literally as
+	 * addr1=DA, addr2=SA, addr3=BSSID -- which is what hcxpcapngtool/wifite
+	 * use to pair the EAPOL messages and extract the AP/STA MACs.
+	 */
 	p = skb_put(skb, 24);
 	memset(p, 0, 24);
 	p[0] = 0x08;			/* frame control: type Data, subtype 0 */
-	p[1] = 0x02;			/* FromDS */
-	memcpy(&p[4],  &dhdp->mac,    ETHER_ADDR_LEN);	/* addr1 = DA  = our STA */
-	memcpy(&p[10], &event->addr,  ETHER_ADDR_LEN);	/* addr2 = BSSID = AP    */
-	memcpy(&p[16], &event->addr,  ETHER_ADDR_LEN);	/* addr3 = SA  = AP      */
+	p[1] = 0x00;
+	memcpy(&p[4],  da,    ETHER_ADDR_LEN);	/* addr1 = DA    */
+	memcpy(&p[10], sa,    ETHER_ADDR_LEN);	/* addr2 = SA    */
+	memcpy(&p[16], bssid, ETHER_ADDR_LEN);	/* addr3 = BSSID */
 
 	/* LLC/SNAP with the 802.1X ethertype */
 	p = skb_put(skb, sizeof(snap_8021x));
@@ -2992,8 +3014,15 @@ dhd_mon_eapol_reinject(dhd_pub_t *dhdp, dhd_if_t *ifp, wl_event_msg_t *event,
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
 	mon_ndev->last_rx = jiffies;
 
-	DHD_ERROR(("%s: injected full EAPOL (%u bytes) to monitor from " MACDBG "\n",
-		__FUNCTION__, dlen, MAC2STRDBG((uint8 *)&event->addr)));
+	/* Log enough of the raw payload to confirm the firmware's format (eth hdr
+	 * vs raw 802.1X) and whether the event fires for foreign frames, so the
+	 * first on-device run pins both without guessing. */
+	DHD_ERROR(("%s: injected EAPOL body=%u eth_hdr=%d rawlen=%u peer=" MACDBG
+		" raw=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
+		__FUNCTION__, dlen, have_eth_hdr, rawlen,
+		MAC2STRDBG((uint8 *)&event->addr),
+		raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+		raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]));
 
 	if (in_interrupt())
 		netif_rx(skb);
