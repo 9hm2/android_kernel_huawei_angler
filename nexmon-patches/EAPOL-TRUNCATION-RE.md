@@ -324,3 +324,43 @@ caller can supply the full frame instead. Per nexmon's rom_extraction:
 trap dumper already proved can read dongle memory). With rom.bin loaded in r2
 at base 0x0 alongside the RAM blob at 0x180000, the whole monitor path becomes
 analysable end to end.
+
+## ROM dumped — full monitor/EAPOL chain mapped (radare2)
+
+Dumped the live ROM (0x0..0xA0000, 655360 bytes, validated: 256 distinct
+byte values, 6.3% zero) off the device with bcm4358-romdump.c, and analysed
+ROM+RAM together in r2 (ROM at 0x0, RAM blob at 0x180000). The chain that was
+invisible before is now fully resolved:
+
+- **wl_monitor = ROM 0x18628**. Allocates a new skb sized `p->len - 6`
+  (`ldrh r7,[r2,0xc]; subs r7,6; bl 0x8fd2c`) and memcpy's `p->data+6` for
+  `p->len-6` bytes. So the output size is governed entirely by the incoming
+  packet's `p->len` field (offset 0xC). For EAPOL that field is already 96.
+  The nexmon hook keys on lr==0x1863f (the `mov r4,r0` right after the alloc).
+- **wlc_monitor = ROM 0x1efc0**. Calls wl_monitor at 0x1f0a6 with the packet
+  in r6. It is reached indirectly (no direct bl/b.w and no absolute function
+  pointer found — a base+offset callback in the wlc RX dispatch), so the
+  caller that supplies the 96-byte packet is via a computed RX callback.
+- **EAPOL snoop/event path = ROM 0x23d68 -> 0x23cc8**. 0x23d68 matches
+  ethertype 0xffff888e (const @0x23e0c) and 0xffff88b4, and calls 0x23cc8.
+  0x23cc8 builds a `WLC_E_EAPOL_MSG` event (event id 0x19=25 at 0x23cf2,
+  allocator 0x53408), copying `[r4,0x14]` bytes (0x23d3a/0x23d3c `bl 0x35f8`)
+  where the length comes from its caller (the full frame, `[r7,0xc]-0xe`).
+  So the host-supplicant EAPOL event carries the FULL frame; the 96-byte cut
+  is specific to the MONITOR clone, not this event.
+
+- The size 96 is NOT a literal anywhere in ROM or RAM (no 0x60/0x5a/0x36
+  immediate) — it is computed and lands in the monitor packet's `p->len`
+  before wl_monitor sees it.
+
+### Where this leaves the user's "grab it earlier" idea
+
+The full EAPOL provably exists in RAM on the host-event path (0x23cc8 copies
+the full length to the supplicant). The monitor path, however, is handed a
+separate packet whose `p->len` is already 96 by the time wl_monitor/wlc_monitor
+run, and that packet's buffer past 90 bytes is zero (proven by the earlier
+post-cut=0 probe). The remaining unknown is the computed RX callback that
+supplies the 96-byte packet to wlc_monitor; pinning it is a few more static
+hops (resolving the wlc RX dispatch callback table) or one dynamic caller-chain
+log at wlc_monitor. Until then, rtl88xxau remains the route for crackable
+WPA2 handshake/PMKID capture; everything else on the internal chip works.
