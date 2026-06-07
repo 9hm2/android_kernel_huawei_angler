@@ -51,6 +51,47 @@ clones **that already-truncated copy**, so 90 bytes is all that ever reaches
 the radiotap interface. Plain data frames are not intercepted this way, which
 is why only EAPOL is short.
 
+### Confirmed independently (tshark + byte accounting)
+
+- Wireshark's own dissector flags every one as `Malformed Packet: EAPOL`
+  with `eapol.len` = 95 / 119 / 151 but the frame body cut short. The
+  handshake sequences cleanly M1(95) -> M2(119) -> M3(151) -> M4(95), all
+  truncated at the identical point.
+- Byte accounting of a cut M1: on-air 802.11 = 90 bytes = 26 (hdr+QoS) + 8
+  (SNAP+ethertype) + 56 (EAPOL header+partial body); the **tail is zero-pad**
+  (`00 00 00 ...`), and the trailing 4 bytes are NOT a valid FCS. So the
+  firmware does not "cut" the wire frame -- it copies the EAPOL into a
+  **fixed 96-byte (0x60) buffer and zero-fills the remainder**:
+  96 = 90 on-air + 6 stripped by nexmon's `wl_monitor_radiotap`.
+- The frame reaches the host as a `WLC_E_EAPOL_MSG` (event type 25) -- the
+  firmware "Event encapsulating an EAPOL message" path -- whose payload area
+  is the 0x60 buffer. That is the cap.
+- Only EAPOL is affected because only EAPOL takes this event path; every
+  other unencrypted frame on the test net was a 54-byte QoS-null (no
+  payload) or CCMP-encrypted, so there is no non-EAPOL unencrypted payload
+  frame to compare, but the mechanism (event-encapsulation) is EAPOL-specific
+  by design.
+
+### Why the patch site is hard to pin statically
+
+The cap is NOT a literal: an exhaustive scan found no `#0x60` (96), `#0x5a`
+(90), or `#0x19` (WLC_E_EAPOL_MSG=25) immediate anywhere in the blob. The
+size and the event type both come from struct fields / computed values, so
+the truncation is structural (an event-buffer template size), reached on the
+fullmac 802.1X RX path (RX handler `0x1a560c` -> EAPOL classifiers
+`0x19a182` / `0x19ace8` / `0x19a4d8`). Pinning the exact store that sets the
+0x60 payload length needs dynamic confirmation (a driver-side probe of the
+firmware-delivered skb->len on the EAPOL monitor path) rather than more
+static constant scanning.
+
+### Driver side is clean
+
+`dhd_rx_mon_pkt` (dhd_linux.c) hands the firmware's skb straight to the
+monitor netdev and only prepends a radiotap header; the EAPOL check at
+dhd_linux.c:3048 runs AFTER the monitor diversion and does not shorten the
+frame. So nothing in the kernel truncates EAPOL -- it arrives from the
+firmware already capped at 96 bytes. The fix must be in the firmware.
+
 This is the same class of bug as the three dongle traps already fixed
 (alloc 0x216dfc, free 0x182352, WPS asserts 0x18554a/0x183bf0): a concrete,
 RAM-resident firmware defect — here a fixed-size copy on the EAPOL path.
