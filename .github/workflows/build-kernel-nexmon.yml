@@ -208,7 +208,12 @@ jobs:
             fi
           fi
 
-          ( cd "$PATCHDIR" && make )
+          ( cd "$PATCHDIR" && make ) || {
+            echo "::group::nexmon linker.err"; cat "$PATCHDIR/log/linker.err" 2>/dev/null; echo "::endgroup::"
+            echo "::group::nexmon linker.log"; tail -n 60 "$PATCHDIR/log/linker.log" 2>/dev/null; echo "::endgroup::"
+            echo "::group::nexmon compiler.log"; tail -n 40 "$PATCHDIR/log/compiler.log" 2>/dev/null; echo "::endgroup::"
+            exit 1
+          }
 
           FW="$(find "$PATCHDIR" -maxdepth 1 -name 'fw_bcmdhd.bin' | head -n1)"
           if [ -z "$FW" ]; then

@@ -40,7 +40,7 @@ glob = (
     "// (ethernet header + EAPOL incl. MIC) the firmware passes to its snoop.\n"
     "volatile unsigned int   g_eapol_seq = 0;\n"
     "volatile unsigned short g_eapol_len = 0;\n"
-    "unsigned char           g_eapol_data[400];\n"
+    "unsigned char           g_eapol_data[256];\n"
     "\n"
     "void\n"
     "capture_full_eapol(void *pkt)\n"
