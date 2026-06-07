@@ -113,6 +113,11 @@ jobs:
           # gcc-10+ defaults to -fno-common which breaks this 3.10-era tree;
           # silence host-tool warnings as well so the old code base builds.
           export KCFLAGS="-fcommon -w"
+          # Stamp the kernel version string with the same tag the flashable zip
+          # uses (date-sha8), so `uname -r` on the device matches the downloaded
+          # AnyKernel zip name. Computed once here and reused by the zip step.
+          STAMP="$(date +%Y%m%d)-$(echo "$GITHUB_SHA" | cut -c1-8)"
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
           # The 3.10 Makefile does not create O= itself; make it first.
           mkdir -p out
           make O=out ARCH=arm64 \
@@ -124,8 +129,12 @@ jobs:
             CROSS_COMPILE="$CROSS_COMPILE" \
             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
             HOSTCFLAGS="-fcommon -w" \
+            LOCALVERSION="-$STAMP" \
             Image.gz-dtb
           ls -lh out/arch/arm64/boot/Image.gz-dtb
+          # Show the resulting kernel release string for the build log.
+          cat out/include/config/kernel.release 2>/dev/null \
+            || strings out/arch/arm64/boot/Image.gz-dtb | grep -m1 "$STAMP" || true
 
       # ---- nexmon firmware (built from source) ------------------------------
       - name: Build nexmon firmware
@@ -292,7 +301,9 @@ jobs:
             echo "::warning::No nexmon firmware bundled; zip will flash the kernel only."
           fi
 
-          STAMP="$(date +%Y%m%d)-$(echo "$GITHUB_SHA" | cut -c1-8)"
+          # Reuse the STAMP computed in the kernel build step (exported to
+          # GITHUB_ENV) so the zip name matches the kernel's `uname -r` exactly.
+          STAMP="${STAMP:-$(date +%Y%m%d)-$(echo "$GITHUB_SHA" | cut -c1-8)}"
           ZIP="angler-nethunter-nexmon-${STAMP}.zip"
           ( cd "$HOME/ak3" && zip -r9 "$GITHUB_WORKSPACE/$ZIP" . -x ".git*" -x "*.zip" )
           echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
