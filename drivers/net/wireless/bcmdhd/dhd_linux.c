@@ -2857,8 +2857,23 @@ dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
 		 */
 		if (!build_tag_printed) {
 			build_tag_printed = 1;
-			printf("DHD-MON-BUILD: eapol-probe v3 "
-			    "(firmware NEXMON-EAPOL probe; no fix applied yet)\n");
+			printf("DHD-MON-BUILD: eapol-probe v4 "
+			    "(chain probe: len/next via radiotap TSF)\n");
+		}
+		/* NEXMON-EAPOL chain probe: the firmware wrote a marker into the
+		 * radiotap TSF (tsf_l @ off 8 == 0x4c4f5045) carrying p->len and
+		 * p->next, to tell us if the EAPOL packet is chained (next != 0).
+		 */
+		if (slen >= 16 && d[8] == 0x45 && d[9] == 0x50 &&
+		    d[10] == 0x4f && d[11] == 0x4c) {
+			uint fw_len  = d[12] | (d[13] << 8);
+			uint fw_next = d[14] | (d[15] << 8);
+			if (eapol_dbg_count < 24) {
+				eapol_dbg_count++;
+				printf("NEXMON-EAPOL-CHAIN: fw p->len=%u p->next=%u "
+				    "(next!=0 => fragmented) skb->len=%u\n",
+				    fw_len, fw_next, slen);
+			}
 		}
 		/* Census of monitor-frame sizes: is the 90-byte cut EAPOL-only or a
 		 * global per-frame limit? Print the on-air length + the 802.11
