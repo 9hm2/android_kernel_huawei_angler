@@ -2846,9 +2846,20 @@ dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
 	{
 		static int eapol_dbg_count = 0;
 		static int mon_dbg_count = 0;
+		static int build_tag_printed = 0;
 		uint8 *d = (uint8 *)skb->data;
 		uint slen = skb->len;
 		uint i, scan;
+		/* Build marker so the running kernel/firmware combo is identifiable in
+		 * dmesg (the EAPOL/census prints are identical across builds). Bump
+		 * this string whenever a firmware-side fix is expected so we can tell
+		 * from the log whether the right image is flashed.
+		 */
+		if (!build_tag_printed) {
+			build_tag_printed = 1;
+			printf("DHD-MON-BUILD: eapol-monitor-passthrough hook v1 "
+			    "(expect full EAPOL skb->len in monitor mode)\n");
+		}
 		/* Census of monitor-frame sizes: is the 90-byte cut EAPOL-only or a
 		 * global per-frame limit? Print the on-air length + the 802.11
 		 * frame-control byte for the first 40 monitor frames. d[24] is the
