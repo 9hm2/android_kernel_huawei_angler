@@ -192,18 +192,11 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
-            # DIAGNOSTIC: probe whether the full EAPOL is recoverable in
-            # wl_monitor_radiotap (sts->pktlength vs p->len + post-cut bytes).
-            [ -f "$PATCHDIR/src/monitormode.c" ] && \
-              bash "$NXP/bcm4358-monitor-eapol-probe.sh" "$PATCHDIR/src/monitormode.c"
             # free() NULL guard: hook the heap free() at 0x18234c so a NULL
             # buffer (besside-ng RX/event path under load) no longer traps the
             # dongle (epc 0x182352). Only for the 300_14 build the offsets match.
             if [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
               bash "$NXP/bcm4358-install-free-guard.sh" "$PATCHDIR/src" "$NXP"
-              # feed-probe: BLPatch 0x1a6d28 to record the packet length at the
-              # RAM monitor feed (decides if the full EAPOL is present there).
-              bash "$NXP/bcm4358-install-feed-probe.sh" "$PATCHDIR/src" "$NXP"
             fi
           fi
 

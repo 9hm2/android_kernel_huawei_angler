@@ -390,3 +390,36 @@ The one remaining fact to confirm (one build): is [r6,0xc] at 0x1a6d28 the
 full EAPOL length or already 96? If full, this is the fix site; if 96, the
 truncation is upstream of the RX path too. This is a precise, RAM-resident,
 single-measurement question — not guesswork.
+
+## FINAL (ROM-proven): EAPOL is in a fixed ~96B pool lbuf from the start
+
+The feed probe at 0x1a6d28 measured feed_len=96 (post-cut bytes zero) for
+every EAPOL frame: the packet is ALREADY 96 bytes at the earliest patchable
+RAM monitor-feed point, not just inside the ROM clone. Combined with the full
+ROM map, the mechanism is now conclusive:
+
+- The EAPOL handling uses a FIXED-SIZE pool lbuf. The event allocator chain
+  0x23cc8 -> 0x53408 -> 0xdfc hands out fixed pool buffers (memset 0x40 region,
+  pool at [wlc+..]). The EAPOL (WLC_E_EAPOL_MSG, id 0x19) is copied into one of
+  these ~96-byte pool lbufs very early.
+- Every later consumer — the host-supplicant event, the monitor-RX path
+  (0x1a3068/0x1a6c8a), wlc_monitor (0x1ecc4), wl_monitor (0x18628) — sees that
+  same 96-byte lbuf. The probes proved p->len=96 and feed_len=96 at each stage,
+  with zero padding past 90 bytes.
+- The 96 is the pool lbuf size (structural), which is why no 0x60/0x5a literal
+  exists in ROM or RAM.
+
+So the full 155+ byte EAPOL never exists in any single contiguous buffer after
+reception — only in the chip's hardware RX FIFO at the instant of receipt,
+which is not reachable from patchable code. Redirecting/cloning "earlier" does
+not help because the earliest patchable point already holds the 96-byte lbuf.
+
+### Definitive conclusion
+
+Monitor-mode full-length EAPOL capture is NOT achievable on this chip/firmware
+by patching (ROM clone + fixed-size EAPOL pool lbuf, no contiguous full frame
+in patchable RAM). This was proven end-to-end with the dumped ROM in r2 plus
+on-device length probes — not inferred. Use rtl88xxau for crackable WPA2
+handshake/PMKID capture; the internal BCM4358 does everything else (monitor,
+injection, channel control, deauth, MAC spoof, the three trap fixes, WPS
+stability).
