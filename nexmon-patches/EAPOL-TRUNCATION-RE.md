@@ -288,3 +288,39 @@ the three trap fixes, WPS stability) works.
 
 The diagnostic probes (DHD-MON-EAPOL/CENSUS/CHAIN and the nexmon TSF marker)
 were the means to prove this and are removed from the shipping build.
+
+## RE tooling upgrade + memory map (radare2)
+
+Installed radare2 5.5.0 (+ r2pipe, JRE) and re-analysed the RAM blob with
+proper function/xref analysis (run r2 with -N to disable sandbox). r2 resolves
+the real branch targets the raw capstone disasm got wrong: calls that looked
+like "0x23d68" are actually ROM (r2 shows 0xffea3d68; ROM base wraps).
+
+Confirmed memory map (from nexmon definitions.mk / rom_extraction):
+  ROM   0x000000 .. 0x0A0000   (640 KiB)   <- NOT in fw_bcmdhd.bin
+  RAM   0x180000 .. 0x240000   (downloaded blob, what we have)
+  UCODE 0x20c9c0 ; templateram 0x219ed8
+
+The monitor RX function fcn 0x1a3068 (910 bytes) was mapped cleanly. Its
+calls split as:
+  RAM (patchable): 0x182f38, 0x18b380, 0x18ce80, 0x18cebc  -- all stats /
+                   counter wrappers, NOT the packet copy
+  ROM (0x0..0xA0000, not patchable, not in blob): 0x0835f8, 0x0844a4,
+                   0x084b20, 0x084c34, 0x09c4f0, 0x09c518, 0x0a3d68 (the
+                   EAPOL special case), 0x0ae958, 0x0b81b0, 0x0c6c7c, 0x0f2178
+Plus wl_monitor itself is ROM (the nexmon hook keys on lr==0x1863f, i.e. ROM
+0x1863e).
+
+So the monitor clone (and the EAPOL 90-byte cut) is produced entirely by ROM
+routines; the RAM monitor function only updates counters around the ROM call.
+
+### To get the full picture: dump the ROM
+
+The 0x0..0xA0000 ROM can be read from the device (no flashing) and then
+disassembled with r2 to find the exact EAPOL truncation and whether any RAM
+caller can supply the full frame instead. Per nexmon's rom_extraction:
+    dhdutil membytes -r 0x0 0xA0000 /sdcard/rom.bin
+(or a small in-driver membytes reader using dhdpcie_bus_membytes, which the
+trap dumper already proved can read dongle memory). With rom.bin loaded in r2
+at base 0x0 alongside the RAM blob at 0x180000, the whole monitor path becomes
+analysable end to end.
