@@ -2894,6 +2894,112 @@ dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
 
 	return 0;
 }
+
+/*
+ * Rebuild a full 802.11 Data frame from the complete EAPOL message the firmware
+ * delivers via the WLC_E_EAPOL_MSG event, and inject it into the monitor vif.
+ *
+ * Why this exists: in monitor mode the chip's ROM hands the monitor path a
+ * radiotap clone of each received frame, but for EAPOL it caps that clone at
+ * ~90 on-air bytes -- dropping exactly the M1 key data (RSN PMKID) and the
+ * M2/M3 MIC that make a WPA2 handshake crackable. This was proven end to end
+ * with the dumped ROM in radare2 plus on-device length probes (every EAPOL
+ * monitor frame arrived as a fixed 96-byte buffer, zero-padded past 90); the
+ * truncation lives in ROM and is not patchable.
+ *
+ * The WLC_E_EAPOL_MSG event, by contrast, encapsulates the WHOLE EAPOL frame
+ * (the firmware copies the full length into the event, independent of the
+ * monitor clone). It travels on the in-band Broadcom event channel, so it
+ * reaches the host even while monitor_type is set. We subscribe to it (see the
+ * setbit in dhd_preinit_ioctls) and, whenever monitor capture is active,
+ * reconstruct a complete 802.11 frame from it and feed the monitor netdev.
+ * hcxdumptool / airodump-ng / wifite then see the full M1 -- crackable PMKID
+ * material from the internal BCM4358, with no firmware patch.
+ *
+ * The event fires for EAPOL our STA receives -- e.g. M1 of an association we
+ * make to the target AP (the clientless PMKID attack). event->addr is the peer
+ * (AP) address; dhdp->mac is our own STA address.
+ */
+static void
+dhd_mon_eapol_reinject(dhd_pub_t *dhdp, dhd_if_t *ifp, wl_event_msg_t *event,
+	void *data)
+{
+	static const uint8 snap_8021x[8] =
+		{ 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E };
+	struct net_device *mon_ndev;
+	struct ieee80211_radiotap_header *rtap;
+	struct sk_buff *skb;
+	uint8 *payload = (uint8 *)data;
+	uint32 dlen;
+	uint8 *p;
+
+	if (!ifp || !ifp->net || !data)
+		return;
+
+	dlen = ntoh32(event->datalen);
+	if (dlen < 4 || dlen > 2048)	/* sanity: a real EAPOL frame, not junk */
+		return;
+
+	/* The event payload may or may not carry a leading 14-byte ethernet
+	 * header. If it does (ethertype 0x888E at offset 12), strip it so we copy
+	 * only the 802.1X portion beneath our own LLC/SNAP; otherwise it is already
+	 * the raw 802.1X body.
+	 */
+	if (dlen >= ETHER_HDR_LEN && payload[12] == 0x88 && payload[13] == 0x8E) {
+		payload += ETHER_HDR_LEN;
+		dlen    -= ETHER_HDR_LEN;
+	}
+
+	mon_ndev = dhd_mon_lookup_dev(ifp->net);
+	if (!mon_ndev) {
+		if (ifp->net->type == ARPHRD_IEEE80211_RADIOTAP)
+			mon_ndev = ifp->net;
+		else
+			return;
+	}
+
+	/* radiotap(8) + 802.11 data hdr(24) + LLC/SNAP(8) + EAPOL body */
+	skb = dev_alloc_skb(sizeof(*rtap) + 24 + sizeof(snap_8021x) + dlen);
+	if (!skb)
+		return;
+
+	/* minimal presence-less radiotap header (DLT_IEEE802_11_RADIO) */
+	rtap = (struct ieee80211_radiotap_header *)skb_put(skb, sizeof(*rtap));
+	memset(rtap, 0, sizeof(*rtap));
+	rtap->it_len = cpu_to_le16(sizeof(*rtap));
+
+	/* 802.11 Data header, FromDS (AP -> our STA) */
+	p = skb_put(skb, 24);
+	memset(p, 0, 24);
+	p[0] = 0x08;			/* frame control: type Data, subtype 0 */
+	p[1] = 0x02;			/* FromDS */
+	memcpy(&p[4],  &dhdp->mac,    ETHER_ADDR_LEN);	/* addr1 = DA  = our STA */
+	memcpy(&p[10], &event->addr,  ETHER_ADDR_LEN);	/* addr2 = BSSID = AP    */
+	memcpy(&p[16], &event->addr,  ETHER_ADDR_LEN);	/* addr3 = SA  = AP      */
+
+	/* LLC/SNAP with the 802.1X ethertype */
+	p = skb_put(skb, sizeof(snap_8021x));
+	memcpy(p, snap_8021x, sizeof(snap_8021x));
+
+	/* the full EAPOL body the firmware preserved in the event */
+	p = skb_put(skb, dlen);
+	memcpy(p, payload, dlen);
+
+	skb->dev = mon_ndev;
+	skb->protocol = htons(ETH_P_802_2);
+	skb->pkt_type = PACKET_OTHERHOST;
+	skb_reset_mac_header(skb);
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
+	mon_ndev->last_rx = jiffies;
+
+	DHD_ERROR(("%s: injected full EAPOL (%u bytes) to monitor from " MACDBG "\n",
+		__FUNCTION__, dlen, MAC2STRDBG((uint8 *)&event->addr)));
+
+	if (in_interrupt())
+		netif_rx(skb);
+	else
+		netif_rx_ni(skb);
+}
 #endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 void
@@ -6128,6 +6234,15 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 	setbit(eventmask, WLC_E_MIC_ERROR);
 	setbit(eventmask, WLC_E_ASSOC_REQ_IE);
 	setbit(eventmask, WLC_E_ASSOC_RESP_IE);
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	/* Subscribe to the firmware's EAPOL-message event. The ROM monitor clone
+	 * truncates received EAPOL frames to ~90 on-air bytes (losing the M1 RSN
+	 * PMKID and the M2/M3 MIC), but this event encapsulates the FULL frame.
+	 * dhd_mon_eapol_reinject() rebuilds a complete 802.11 frame from it during
+	 * monitor capture, restoring crackable WPA2 material with no firmware patch.
+	 */
+	setbit(eventmask, WLC_E_EAPOL_MSG);
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 #ifndef WL_CFG80211
 	setbit(eventmask, WLC_E_PMKID_CACHE);
 	setbit(eventmask, WLC_E_TXFAIL);
@@ -7745,6 +7860,18 @@ dhd_wl_host_event(dhd_info_t *dhd, int *ifidx, void *pktdata, size_t pktlen,
 
 	if ((dhd->iflist[*ifidx] == NULL) || (dhd->iflist[*ifidx]->net == NULL))
 		return BCME_ERROR;
+
+#ifdef CONFIG_BCMDHD_MONITOR_MODE
+	/* When monitor capture is active, rebuild the full EAPOL the firmware
+	 * preserved in this event and inject it into the monitor vif -- the ROM
+	 * monitor clone would otherwise truncate it past ~90 bytes. (event is in
+	 * network byte order here; see wl_host_event.)
+	 */
+	if (dhd->pub.monitor_type &&
+	    ntoh32(event->event_type) == WLC_E_EAPOL_MSG) {
+		dhd_mon_eapol_reinject(&dhd->pub, dhd->iflist[*ifidx], event, *data);
+	}
+#endif /* CONFIG_BCMDHD_MONITOR_MODE */
 
 #ifdef WL_CFG80211
 

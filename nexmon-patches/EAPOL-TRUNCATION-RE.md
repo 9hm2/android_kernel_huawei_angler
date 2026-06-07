@@ -414,12 +414,68 @@ reception — only in the chip's hardware RX FIFO at the instant of receipt,
 which is not reachable from patchable code. Redirecting/cloning "earlier" does
 not help because the earliest patchable point already holds the 96-byte lbuf.
 
-### Definitive conclusion
+### Conclusion on the MONITOR-CLONE path (firmware)
 
-Monitor-mode full-length EAPOL capture is NOT achievable on this chip/firmware
-by patching (ROM clone + fixed-size EAPOL pool lbuf, no contiguous full frame
-in patchable RAM). This was proven end-to-end with the dumped ROM in r2 plus
-on-device length probes — not inferred. Use rtl88xxau for crackable WPA2
-handshake/PMKID capture; the internal BCM4358 does everything else (monitor,
-injection, channel control, deauth, MAC spoof, the three trap fixes, WPS
-stability).
+Fixing the *monitor radiotap clone* to carry the full EAPOL is NOT achievable by
+patching: the ROM clone reads `p->len` (already 96 for EAPOL at the earliest
+patchable RAM feed point), and the truncation is in ROM, not RAM. Proven end to
+end with the dumped ROM in r2 plus on-device length probes — not inferred.
+
+## BREAKTHROUGH — the full EAPOL is recoverable via the EVENT channel (no patch)
+
+The "not achievable" verdict above was about the *monitor clone only*. It missed
+a second, independent copy of the same frame that the ROM analysis itself had
+already surfaced (this file, "host-event path"): the firmware's EAPOL snoop
+(ROM 0x23d68 -> 0x23cc8) builds a **WLC_E_EAPOL_MSG event (id 25 / 0x19)** that
+encapsulates the *whole* EAPOL frame — it copies the full length into a 0xdfc
+(3580-byte) event buffer, NOT the 96-byte monitor lbuf. Re-reading the r2 trace:
+the event carries the complete M1 (RSN PMKID) / key data; only the monitor clone
+is capped at 96.
+
+Two facts make this directly usable from the driver, with **no firmware patch**:
+
+1. The event rides the in-band Broadcom event channel (ETHER_TYPE_BRCM), which
+   `dhd_rx_mon_pkt()` explicitly passes through (it returns -1 for BRCM so the
+   normal event handler runs). So the full EAPOL reaches the host *even while
+   monitor_type is set*.
+2. The host just has to **subscribe** to the event — the stock driver does not
+   `setbit(eventmask, WLC_E_EAPOL_MSG)`, which is why the full frame was never
+   seen before. Enabling bit 25 makes the firmware emit it.
+
+### Driver implementation (this branch)
+
+`drivers/net/wireless/bcmdhd/dhd_linux.c`:
+- `dhd_preinit_ioctls()`: `setbit(eventmask, WLC_E_EAPOL_MSG)` (under
+  `CONFIG_BCMDHD_MONITOR_MODE`) so the firmware delivers the full EAPOL event.
+- `dhd_mon_eapol_reinject()`: from the event's payload (`*data`, length
+  `ntoh32(event->datalen)`, peer in `event->addr`) it rebuilds a complete
+  802.11 Data frame — minimal radiotap + FromDS 802.11 header (addr1=our STA
+  `dhdp->mac`, addr2/3=AP `event->addr`) + LLC/SNAP(0x888E) + the full EAPOL body
+  — and injects it into the monitor netdev via `netif_rx`.
+- `dhd_wl_host_event()`: when `monitor_type` is set and the event is
+  `WLC_E_EAPOL_MSG`, calls the reinject. A `DHD_ERROR` line logs the injected
+  length + AP MAC so the first on-device run confirms format/length.
+
+### Scope (honest)
+
+The event fires for EAPOL **our STA receives**. That covers the modern
+**clientless PMKID attack**: we associate to the target AP, the AP's M1 (with the
+RSN PMKID) is received and re-injected full-length into the monitor capture, and
+`hcxdumptool`/`hcxpcapngtool` -> hashcat `-m 22000` cracks it — entirely on the
+internal BCM4358, no external dongle, no firmware patch. It does NOT recover a
+**foreign** client's 4-way handshake (we are not the recipient, so no event); for
+that passive case rtl88xxau remains the route. Everything else on the internal
+chip already works (monitor, injection, channel control, deauth, MAC spoof, the
+three trap fixes, WPS stability).
+
+### To verify on device (one build)
+
+1. Flash the new kernel; `dmesg | grep -i "injected full EAPOL"`.
+2. Put a monitor vif up + run the PMKID capture against an AP you associate to
+   (e.g. `reaver-internal.sh` holds the assoc, or a plain `wpa_supplicant` open
+   assoc), capturing on the monitor vif with `hcxdumptool`/`tcpdump`.
+3. Confirm the captured EAPOL is full length (M1 with PMKID, not 90 bytes) and
+   that `hcxpcapngtool` extracts a `WPA*01*` PMKID line.
+   The `DHD_ERROR` log prints the exact payload length/format from the firmware,
+   which pins whether the event payload includes a leading ethernet header (the
+   reinject auto-detects and strips it).
