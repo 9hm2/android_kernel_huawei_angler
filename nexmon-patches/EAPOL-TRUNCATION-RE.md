@@ -247,3 +247,44 @@ shared memory / the rx descriptor around the source buffer, or bisect by
 patching each wlc->monitor consumer (0x1a31b4 vs 0x1a320e vs 0x1a3d26 …) one
 at a time behind the build marker, observing which one changes skb->len.
 Only patch once a single change is shown to move skb->len off 114.
+
+## RESOLVED (diagnosis complete): the cut is in ROM, before nexmon sees it
+
+The chain hypothesis was tested directly and DISPROVEN. The firmware patch
+smuggled p->len and p->next out via the radiotap TSF; on-device:
+
+    NEXMON-EAPOL-CHAIN: fw p->len=96 p->next=0 ... skb->len=114
+
+p->next=0 for every EAPOL frame -> the packet is NOT chained. The 96-byte
+packet handed to nexmon's wl_monitor_radiotap genuinely contains only ~90
+on-air bytes; the rest of the EAPOL is already gone.
+
+Per nexmon's own monitormode.c, wl_monitor (= wlc_monitor) lives in ROM, and
+the hook only sees the packet wlc_monitor already built (it hooks
+pkt_buf_get_skb and checks lr==0x1863f to detect the wlc_monitor caller). The
+monitor branch in RAM (0x1a32ea) calls ROM handlers 0x23d68 (EAPOL special
+case) and 0x2e958 with the frame; both are < 0x180000 (ROM). So the EAPOL is
+truncated to ~90 bytes inside ROM, BEFORE any RAM/nexmon code runs.
+
+### Conclusion
+
+Delivering full-length EAPOL to the monitor interface is NOT achievable by
+firmware patching on this chip/firmware:
+- the truncation is in ROM (wlc_monitor / its EAPOL special handler), and
+- nexmon itself notes "there are no free ROM patches left" on this build
+  (no flashpatch config slot to redirect a ROM instruction).
+
+This is the same class of limit as monitor-mode TX-ACK: a ROM-resident
+behaviour with no free flashpatch slot. Unlike the three dongle traps (RAM,
+hookable) this one cannot be fixed in the downloaded blob.
+
+### Practical upshot
+
+The on-board BCM4358 captures EAPOL only as a 90-byte stub (M2 MIC and M3 GTK
+lost), so it cannot feed aircrack/hashcat a crackable handshake or PMKID. For
+WPA2 handshake/PMKID capture use the external rtl88xxau. Everything else on
+the internal chip (monitor, injection, channel control, deauth, MAC spoof,
+the three trap fixes, WPS stability) works.
+
+The diagnostic probes (DHD-MON-EAPOL/CENSUS/CHAIN and the nexmon TSF marker)
+were the means to prove this and are removed from the shipping build.

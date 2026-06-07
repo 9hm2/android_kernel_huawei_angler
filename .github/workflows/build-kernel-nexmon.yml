@@ -192,12 +192,6 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
-            # DIAGNOSTIC: print p->len + bytes around the 96 boundary for EAPOL
-            # frames in wl_monitor_radiotap, to decide whether the EAPOL packet
-            # handed to the monitor tap is genuinely ~96 bytes (truncated
-            # upstream) or longer with just p->len short.
-            [ -f "$PATCHDIR/src/monitormode.c" ] && \
-              bash "$NXP/bcm4358-monitor-eapol-probe.sh" "$PATCHDIR/src/monitormode.c"
             # free() NULL guard: hook the heap free() at 0x18234c so a NULL
             # buffer (besside-ng RX/event path under load) no longer traps the
             # dongle (epc 0x182352). Only for the 300_14 build the offsets match.
@@ -223,12 +217,10 @@ jobs:
           if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
              [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
             bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-wps-assert-defuse.sh" "$FW"
-            # NOTE: the EAPOL full-frame patch (bcm4358-eapol-monitor-fullframe.sh,
-            # 0x1a3356) is NOT applied — on-device testing proved it ineffective
-            # (EAPOL stayed at skb->len=114), i.e. 0x1a3356 is on a stats/marker
-            # path, not the truncating copy. Kept in-tree for the record; will be
-            # re-enabled once the real monitor EAPOL copy site is confirmed
-            # dynamically. See nexmon-patches/EAPOL-TRUNCATION-RE.md.
+            # NOTE: monitor-mode EAPOL truncation is NOT fixed — RE proved it
+            # happens in ROM (wlc_monitor / its EAPOL handler) before any
+            # RAM/nexmon code runs, with no free flashpatch slot. Not patchable
+            # on this chip/firmware. See nexmon-patches/EAPOL-TRUNCATION-RE.md.
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/anykernel/firmware"
