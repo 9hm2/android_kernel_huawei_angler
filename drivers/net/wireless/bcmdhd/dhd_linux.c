@@ -2835,6 +2835,33 @@ dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
 	if (!ifp || !ifp->net)
 		return -1;
 
+	/* NEXMON-EAPOL-PROBE readout: the firmware patch put a marker + the real
+	 * frame length (sts->pktlength) + 4 bytes from past the 90-byte cut into
+	 * the radiotap header. If pktlength > p->len and the post-cut bytes are
+	 * non-zero, the full EAPOL is present in the buffer and recoverable.
+	 */
+	{
+		static int probe_count = 0;
+		uint8 *d = (uint8 *)skb->data;
+		uint slen = skb->len;
+		if (!probe_count)
+			printf("DHD-MON-BUILD: eapol-probe v5 "
+			    "(sts->pktlength + post-cut bytes via radiotap)\n");
+		if (slen >= 24 && d[8] == 0x45 && d[9] == 0x50 &&
+		    d[10] == 0x4f && d[11] == 0x4c) {
+			uint p_len    = d[12] | (d[13] << 8);
+			uint pktlen   = d[14] | (d[15] << 8);
+			uint8 b90 = d[17], b91 = d[18], b92 = d[19], b93 = d[20];
+			if (probe_count < 24) {
+				probe_count++;
+				printf("NEXMON-EAPOL-FULL: p->len=%u sts->pktlength=%u "
+				    "post-cut[90..93]=%02x%02x%02x%02x "
+				    "(pktlength>p->len && nonzero => full data present)\n",
+				    p_len, pktlen, b90, b91, b92, b93);
+			}
+		}
+	}
+
 	/* Firmware events arrive on the in-band Broadcom ethertype; leave those
 	 * for the normal event handler rather than pushing them to userspace as
 	 * bogus 802.11 frames.
