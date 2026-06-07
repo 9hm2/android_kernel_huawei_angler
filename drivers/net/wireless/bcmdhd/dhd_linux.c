@@ -2845,9 +2845,20 @@ dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
 	 */
 	{
 		static int eapol_dbg_count = 0;
+		static int mon_dbg_count = 0;
 		uint8 *d = (uint8 *)skb->data;
 		uint slen = skb->len;
 		uint i, scan;
+		/* Census of monitor-frame sizes: is the 90-byte cut EAPOL-only or a
+		 * global per-frame limit? Print the on-air length + the 802.11
+		 * frame-control byte for the first 40 monitor frames. d[24] is the
+		 * FC after the 24-byte radiotap header the nexmon firmware prepends.
+		 */
+		if (mon_dbg_count < 40) {
+			mon_dbg_count++;
+			printf("DHD-MON-CENSUS: skb->len=%u fc0=0x%02x fc1=0x%02x\n",
+			    slen, (slen > 24) ? d[24] : 0, (slen > 25) ? d[25] : 0);
+		}
 		/* limit the search so a malformed frame can't run us off the end */
 		scan = (slen > 64) ? 64 : slen;
 		for (i = 0; i + 8 <= scan; i++) {
