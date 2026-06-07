@@ -192,6 +192,11 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
+            # wl_monitor_radiotap(): restore the full EAPOL length so passive
+            # monitor capture keeps the M1 PMKID / M2-M3 MIC (firmware truncates
+            # unprotected data frames to ~86 bytes; the full body is in the lbuf).
+            [ -f "$PATCHDIR/src/monitormode.c" ] && \
+              bash "$NXP/bcm4358-monitor-eapol-fulllen.sh" "$PATCHDIR/src/monitormode.c"
             # free() NULL guard: hook the heap free() at 0x18234c so a NULL
             # buffer (besside-ng RX/event path under load) no longer traps the
             # dongle (epc 0x182352). Only for the 300_14 build the offsets match.

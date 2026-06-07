@@ -448,6 +448,20 @@ into a `WLC_E_EAPOL_MSG` (id 0x19) event and sends it (`0x29fa8 -> 0x2ce10`). Th
 snoop is gated on `[[r0],0x9d] != 0` and `[r0,0x222] == 0` (0x23d7a / 0x23d82) —
 flags, NOT a BSS-membership check.
 
+### FIX IMPLEMENTED (nexmon source) — restore full EAPOL on the monitor clone
+
+Avenue 2, chosen. The monitor clone is just `memcpy(p->data+6, p->len-6)` in
+nexmon's `monitormode.c`; for unprotected EAPOL `p->len` was clamped to ~92 but
+the full frame is still in the lbuf. `bcm4358-monitor-eapol-fulllen.sh` patches
+`wl_monitor_hook()` (the dispatcher for BOTH radiotap and IEEE80211 modes) to
+detect an unprotected EAPOL data frame (SNAP 0x888E) and restore `p->len` from
+the 802.1X length field before the clone runs. Bounded (<=600), grow-only, so a
+wrong guess cannot fault. Wired into CI next to the underflow guard. The 86-byte
+frame already carries the correct 802.11 addressing, so the recovered clone is a
+fully-addressed, crackable handshake — no host correlation, no event needed.
+Requires a `build_nexmon=true` build. Verify: passive capture, EAPOL frames now
+full length (M1 with PMKID, M2/M3 with MIC), `hcxpcapngtool` extracts a hash.
+
 ### Two avenues to deliver the full foreign EAPOL
 
 1. **Event reinjection (already coded).** If the snoop/event fires in passive
