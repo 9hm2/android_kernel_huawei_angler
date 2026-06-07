@@ -57,25 +57,31 @@ glob = (
     "    }\n"
     "}\n"
     "\n"
-    "// Hooked in place of `bl 0x23d68` at 0x1a3372. Same args as the snoop\n"
-    "// (r0..r3 + one stacked arg); the packet is the 2nd arg. Capture, then\n"
-    "// tail-call the original snoop so firmware behaviour is unchanged.\n"
-    "void\n"
-    "snoop_call_hook(void *a0, void *a1, void *a2, void *a3, void *a4)\n"
-    "{\n"
-    "    void (*orig)(void *, void *, void *, void *, void *) =\n"
-    "        (void (*)(void *, void *, void *, void *, void *))(0x23d68 | 1);\n"
-    "    capture_full_eapol(a1);\n"
-    "    orig(a0, a1, a2, a3, a4);\n"
-    "}\n"
-    "\n"
-    "__attribute__((at(0x1a3372, \"\", CHIP_VER_BCM4358, FW_VER_7_112_300_14)))\n"
-    "BLPatch(snoop_call_hook, snoop_call_hook);\n"
-    "\n"
 )
 if marker_fn not in src:
     sys.stderr.write("snoopcap: wl_monitor_hook definition not found\n"); sys.exit(1)
 src = src.replace(marker_fn, glob + marker_fn, 1)
+
+# --- 1b) capture the full EAPOL via the EXISTING pkt_buf_get_skb hook: the
+# foreign EAPOL classifier at 0x19b9f0 allocates a 202-byte skb (bl 0x18ce3c,
+# return 0x19ba1b) with the full source frame still in r4 ([r4,8]=data,
+# [r4,0xc]=len). Add an r4 capture for that return address -- no new BLPatch.
+pkt_anchor = (
+    '    void *sts = sp + 56; // add this offset to the stack pointer to find the sts struct created in wlc_monitor\n'
+    "\n"
+    "    if (lr == 0x1863f && !call_original_wl_monitor) { // called from wl_monitor\n"
+)
+if pkt_anchor not in src:
+    sys.stderr.write("snoopcap: _pkt_buf_get_skb anchor not found\n"); sys.exit(1)
+pkt_new = (
+    '    void *sts = sp + 56; // add this offset to the stack pointer to find the sts struct created in wlc_monitor\n'
+    "    register void *r4cap asm(\"r4\");\n"
+    "    if (lr == 0x19ba1b) // foreign EAPOL classifier: full frame in r4\n"
+    "        capture_full_eapol(r4cap);\n"
+    "\n"
+    "    if (lr == 0x1863f && !call_original_wl_monitor) { // called from wl_monitor\n"
+)
+src = src.replace(pkt_anchor, pkt_new, 1)
 
 # --- 2) splice into wl_monitor_hook body
 anchor = "wl_monitor_hook(struct wl_info *wl, struct wl_rxsts *sts, struct sk_buff *p) {\n"
