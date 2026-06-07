@@ -540,3 +540,33 @@ three trap fixes, WPS stability).
    The `DHD_ERROR` log prints the exact payload length/format from the firmware,
    which pins whether the event payload includes a leading ethernet header (the
    reinject auto-detects and strips it).
+
+## CONCLUSIVE (multi-evidence): passive crackable MIC not achievable on this chip
+
+The full-length recovery made the monitor frames the right SIZE (133/157/189,
+tshark+aircrack call it a "valid handshake"), but inspecting the raw bytes shows
+the **Key MIC and key-data past byte ~86 are zero/stale** — only the 802.11
+header + nonces are real (M1 ANonce, M2 SNonce). hcxpcapngtool extracts nothing;
+hashcat cannot crack a zero MIC. So the monitor buffer simply does NOT contain
+the secret.
+
+Every attempt to reach the full frame (where the MIC does exist — the snoop /
+RX-classifier path) destabilises the dongle:
+- the p->next probe dereferenced an invalid pointer -> trap + firmware reload;
+- the full-length recovery inflates p->len on the shared RX packet, which the
+  snoop/association path then over-reads -> dongle trap (type 0x4 @ epc 0x4c58,
+  lp 0x1a3b3f) the moment we associate in monitor mode.
+
+The snoop that copies the full frame (incl. MIC) into WLC_E_EAPOL_MSG is gated
+off in monitor mode (`[wlc,0x222]` monitor flag must be 0; `[[wlc],0x9d]` must be
+1) and its gate is in ROM (no free flashpatch slots). Bridging it via a RAM
+trampoline is high-risk and, per the traps above, destabilises the dongle.
+
+**Verdict:** monitor-mode passive capture of a crackable WPA2 handshake MIC /
+PMKID is not safely achievable on the internal BCM4358. The chip captures the
+full handshake STRUCTURE and the nonces, plus everything else (monitor,
+injection, channel, deauth, MAC spoof, beacons, full data frames), but the EAPOL
+MIC is not present in any monitor-reachable buffer. Use rtl88xxau for crackable
+passive handshakes/PMKID. The recovery patch is disabled in CI (it gave
+false-positive "valid" handshakes and could trap on association); it remains in
+the tree for reference.

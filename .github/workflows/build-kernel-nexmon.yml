@@ -192,14 +192,15 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
-            # wl_monitor_radiotap(): restore the full EAPOL length so passive
-            # monitor capture keeps the M1 PMKID / M2-M3 MIC (firmware truncates
-            # unprotected data frames to ~86 bytes; the full body is in the lbuf).
-            [ -f "$PATCHDIR/src/monitormode.c" ] && \
-              bash "$NXP/bcm4358-monitor-eapol-fulllen.sh" "$PATCHDIR/src/monitormode.c"
-            # (DIAGNOSTIC probe bcm4358-monitor-eapol-probe.sh is intentionally
-            #  NOT applied: dereferencing p->next faulted the dongle. Kept in the
-            #  tree for reference only.)
+            # NOTE: the EAPOL full-length recovery is DISABLED. It inflates
+            # p->len on the shared RX packet, which the snoop/association path
+            # then over-reads -> dongle trap (epc 0x4c58, lp 0x1a3b3f) when
+            # associating in monitor mode. And it cannot deliver crackable data:
+            # the Key MIC / key-data past ~86 bytes is not present in the monitor
+            # buffer (only the header+nonces), so the frames look valid but the
+            # MIC is zero. See EAPOL-TRUNCATION-RE.md. Kept in-tree for reference.
+            #[ -f "$PATCHDIR/src/monitormode.c" ] && \
+            #  bash "$NXP/bcm4358-monitor-eapol-fulllen.sh" "$PATCHDIR/src/monitormode.c"
             # free() NULL guard: hook the heap free() at 0x18234c so a NULL
             # buffer (besside-ng RX/event path under load) no longer traps the
             # dongle (epc 0x182352). Only for the 300_14 build the offsets match.
