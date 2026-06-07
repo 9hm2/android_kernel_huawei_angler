@@ -364,3 +364,29 @@ supplies the 96-byte packet to wlc_monitor; pinning it is a few more static
 hops (resolving the wlc RX dispatch callback table) or one dynamic caller-chain
 log at wlc_monitor. Until then, rtl88xxau remains the route for crackable
 WPA2 handshake/PMKID capture; everything else on the internal chip works.
+
+## Found the RAM monitor-feed point (patchable): 0x1a6d28
+
+Resolving the wlc_monitor (entry 0x1ecc4) callers with ROM+RAM in r2 gave
+three: ROM 0x1f116, ROM 0x1f13e, and **RAM 0x1a6d28** (patchable!). The RAM
+one is the live monitor feed, inside fcn 0x1a6c8a (the RX receive path):
+
+    0x1a6c8e  ldr  r6, [r1, 8]        ; r6 = received packet
+    ...
+    0x1a6d04  ldr  r3, [r4, 0x208]    ; wlc->monitor
+    0x1a6d08  cbz  r3, 0x1a6d2c       ; not monitor -> skip
+    0x1a6d1a  mov  r0,r4; r1,r6; r2,r5
+    0x1a6d28  bl   0x1ecc4            ; wlc_monitor(wlc, packet=r6, r5)
+
+This is the exact point the user proposed: the packet r6 is fed to the
+monitor chain here, in RAM, gated on wlc->monitor, BEFORE the ROM
+wlc_monitor/wl_monitor build the radiotap clone. fcn 0x1a6c8a is the receive
+path (r6 = [arg,8]); the EAPOL host-event copy (0x23cc8, which makes the 96B
+buffer) is a separate branch. So if r6 still has the full length ([r6,0xc])
+here, redirecting/cloning it full-length at 0x1a6d28 would give the monitor
+the complete EAPOL.
+
+The one remaining fact to confirm (one build): is [r6,0xc] at 0x1a6d28 the
+full EAPOL length or already 96? If full, this is the fix site; if 96, the
+truncation is upstream of the RX path too. This is a precise, RAM-resident,
+single-measurement question — not guesswork.
