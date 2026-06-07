@@ -188,6 +188,12 @@ jobs:
             # dongle (epc 0x182352). Only for the 300_14 build the offsets match.
             if [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
               bash "$NXP/bcm4358-install-free-guard.sh" "$PATCHDIR/src" "$NXP"
+              # EAPOL monitor passthrough: hook 0x19ad06 so that in monitor
+              # mode (wlc->monitor != 0) the firmware stops intercepting
+              # 802.1X/EAPOL on RX, delivering full-length EAPOL to the monitor
+              # clone (fixes the 90-byte handshake truncation). Off-monitor the
+              # phone's WPA client is unaffected. 300_14 offsets only.
+              bash "$NXP/bcm4358-install-eapol-passthrough.sh" "$PATCHDIR/src" "$NXP"
             fi
           fi
 
