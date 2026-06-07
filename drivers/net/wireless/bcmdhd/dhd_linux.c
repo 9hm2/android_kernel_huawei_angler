@@ -2835,6 +2835,44 @@ dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
 	if (!ifp || !ifp->net)
 		return -1;
 
+	/* DIAGNOSTIC: report the exact length the firmware delivered for any
+	 * EAPOL (802.1X) frame on the monitor path. The handshake capture cuts
+	 * every EAPOL to ~90 on-air bytes (firmware copies it into a fixed
+	 * ~96-byte WLC_E_EAPOL_MSG buffer and zero-fills). This prints what the
+	 * firmware actually handed us, so we can confirm the cap on-device and
+	 * locate the offending firmware copy. Rate-limited; scans the radiotap-
+	 * prefixed frame for the SNAP+EAPOL signature aa aa 03 00 00 00 88 8e.
+	 */
+	{
+		static int eapol_dbg_count = 0;
+		uint8 *d = (uint8 *)skb->data;
+		uint slen = skb->len;
+		uint i, scan;
+		/* limit the search so a malformed frame can't run us off the end */
+		scan = (slen > 64) ? 64 : slen;
+		for (i = 0; i + 8 <= scan; i++) {
+			if (d[i] == 0xaa && d[i+1] == 0xaa && d[i+2] == 0x03 &&
+			    d[i+3] == 0x00 && d[i+4] == 0x00 && d[i+5] == 0x00 &&
+			    d[i+6] == 0x88 && d[i+7] == 0x8e) {
+				uint eo = i + 8;       /* start of EAPOL header */
+				uint decl = (eo + 4 <= slen) ?
+				    ((d[eo+2] << 8) | d[eo+3]) : 0;
+				/* throttle: only print the first 16 EAPOL frames so
+				 * the 115200 console isn't flooded during a handshake
+				 */
+				if (eapol_dbg_count < 16) {
+					eapol_dbg_count++;
+					printf("DHD-MON-EAPOL: skb->len=%u snap@%u "
+					    "eapol_hdr@%u declared_len=%u "
+					    "avail_after_hdr=%d\n",
+					    slen, i, eo, decl,
+					    (int)slen - (int)eo - 4);
+				}
+				break;
+			}
+		}
+	}
+
 	/* Firmware events arrive on the in-band Broadcom ethertype; leave those
 	 * for the normal event handler rather than pushing them to userspace as
 	 * bogus 802.11 frames.
