@@ -421,7 +421,54 @@ patching: the ROM clone reads `p->len` (already 96 for EAPOL at the earliest
 patchable RAM feed point), and the truncation is in ROM, not RAM. Proven end to
 end with the dumped ROM in r2 plus on-device length probes — not inferred.
 
-## BREAKTHROUGH — the full EAPOL is recoverable via the EVENT channel (no patch)
+> CORRECTION (see "PASSIVE CAPTURE PROOF" below): the above on-device probes
+> were ALL taken with an active association (reaver / wpa_supplicant), i.e. on
+> the our-BSS supplicant-snoop path, which is NOT the same path a purely passive
+> foreign frame takes. A clean passive capture refutes the "not achievable"
+> verdict: the full foreign EAPOL **is** in dongle RAM.
+
+## PASSIVE CAPTURE PROOF (pass01.cap) — truncation is EAPOL-specific, frame is in RAM
+
+A 100% passive capture (no own association; foreign AP 1a:26:54:05:2f:73, foreign
+client e4:c7:67:11:54:04, deauth to force a handshake) settled it:
+
+- **Beacons: full** (253 B). **Foreign DATA frames: FULL — up to 1490 B** (280 of
+  them). **EAPOL: ALL exactly 86 B**, regardless of real length (M1's `Length: 95`
+  field survives but the body is cut right after the 32-byte ANonce).
+- So it is NOT a global RX/DMA cap and NOT data-frame-general. Full 1490-byte data
+  frames prove the RX path/DMA delivers full frames into RAM. The cut is a
+  **fixed, EAPOL-specific truncation to 86 on-air bytes**.
+- Therefore the **full foreign EAPOL is present in dongle RAM** and is recoverable
+  in principle — the earlier "no contiguous full frame in RAM" was an artifact of
+  measuring only the associated/snoop path.
+
+Confirmed in r2: the snoop `0x23d68` matches ethertype `0xffff888e`, strips 14
+bytes and calls the event builder `0x23cc8`, which copies the **full** `len-14`
+into a `WLC_E_EAPOL_MSG` (id 0x19) event and sends it (`0x29fa8 -> 0x2ce10`). The
+snoop is gated on `[[r0],0x9d] != 0` and `[r0,0x222] == 0` (0x23d7a / 0x23d82) —
+flags, NOT a BSS-membership check.
+
+### Two avenues to deliver the full foreign EAPOL
+
+1. **Event reinjection (already coded).** If the snoop/event fires in passive
+   monitor mode, the existing `WLC_E_EAPOL_MSG` handler delivers the full body.
+   Limitation: the event payload is stripped to the 802.1X body (no MACs); only
+   `event->addr` (the TA/AP) is known, so a *foreign* handshake cannot be fully
+   re-addressed (client MAC missing) for hcxpcapngtool. Good for our-STA frames,
+   weak for foreign.
+2. **Patch the monitor-clone truncation (preferred for passive).** The existing
+   86-byte monitor frame already has the CORRECT 802.11 addressing; only the
+   EAPOL body is cut. Restoring the body length on the monitor clone yields a
+   perfectly-addressed full handshake. Open task: locate the instruction that
+   sets the EAPOL monitor packet's `p->len` to ~92 (86+6) while data frames stay
+   full — it is downstream of the snoop, on the monitor-feed path, and the full
+   body is still in the buffer (proven by the event copy).
+
+The next on-device probe should log, in PASSIVE mode, the EAPOL packet length at
+the monitor feed (`0x1a6c8a`/`wl_monitor 0x18628`) and whether bytes past the cut
+are non-zero — pinning the exact truncation instruction to patch.
+
+## (superseded) BREAKTHROUGH — the full EAPOL is recoverable via the EVENT channel (no patch)
 
 The "not achievable" verdict above was about the *monitor clone only*. It missed
 a second, independent copy of the same frame that the ROM analysis itself had
