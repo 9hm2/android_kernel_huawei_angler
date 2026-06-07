@@ -2857,8 +2857,8 @@ dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
 		 */
 		if (!build_tag_printed) {
 			build_tag_printed = 1;
-			printf("DHD-MON-BUILD: eapol-monitor-passthrough hook v1 "
-			    "(expect full EAPOL skb->len in monitor mode)\n");
+			printf("DHD-MON-BUILD: eapol-monitor-fullframe v2 "
+			    "(0x1a3356 movw#0; expect full EAPOL skb->len)\n");
 		}
 		/* Census of monitor-frame sizes: is the 90-byte cut EAPOL-only or a
 		 * global per-frame limit? Print the on-air length + the 802.11

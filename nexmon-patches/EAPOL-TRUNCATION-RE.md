@@ -178,3 +178,33 @@ PMKID is also affected (it lives in the M1 key-data, past the cut), so the
 internal chip cannot currently feed hashcat a usable handshake **or** PMKID.
 Use the external rtl88xxau for handshake/PMKID capture until the cap is
 patched.
+
+## SOLVED — the correct fix (v2)
+
+The first hook (0x19ad06, on the host 802.3-conversion path 0x19ace8) did
+nothing: on-device the build marker confirmed the fix kernel was flashed
+(uname -r 3.10.73-<stamp>, DHD-MON-BUILD printed) yet EAPOL stayed at
+skb->len=114. Reason: in monitor mode the firmware does NOT run the host
+path — at 0x1a31b4 / 0x1a320e it reads wlc->monitor (`ldr r3,[r5,#0x208]`)
+and, if set, branches to the monitor delivery at 0x1a32ea, bypassing the
+host EAPOL forwarder entirely. So the hooked site never executed.
+
+The real EAPOL special-case is INSIDE the monitor branch:
+
+    0x1a3354  ldr  r1,[sp,#0x10]    ; frame ethertype
+    0x1a3356  movw r3,#0x888e       ; EAPOL
+    0x1a335a  cmp  r1,r3
+    0x1a335c  beq  0x1a3366         ; EAPOL -> special handler (ROM 0x23d68)
+    0x1a335e  movw r3,#0x88b4
+    0x1a3362  cmp  r1,r3
+    0x1a3364  bne  0x1a3376         ; neither -> normal FULL monitor delivery
+    0x1a3366  ...  bl 0x23d68       ; emits the fixed ~96B EAPOL stub
+
+0x23d68 is ROM (not patchable) but does not need to be: rewriting the 4-byte
+`movw r3,#0x888e` at 0x1a3356 to `movw r3,#0` makes EAPOL never match, so it
+falls through to the full-length monitor delivery at 0x1a3376 (the same path
+encrypted data uses, proven to carry up to 1904 bytes). This branch only runs
+in monitor mode, so the phone's WPA client is unaffected and no separate gate
+is needed. The 0x88b4 special case is left intact. Implemented as a verified,
+idempotent 4-byte binary patch (bcm4358-eapol-monitor-fullframe.sh) applied
+to the linked firmware after make.
