@@ -192,15 +192,16 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
-            # Full passive EAPOL via snoop/classifier capture: DISABLED. Two
-            # independent capture points (snoop 0x1a3372, classifier 0x19ba1b)
-            # both only fire for our-BSS EAPOL, never for foreign monitor frames
-            # (on-device diag: g_eapol_len stayed 1). Combined with the raw-byte
-            # evidence (Key MIC zero past ~86B), the firmware does not retain the
-            # foreign unprotected EAPOL payload in monitor-reachable RAM -- only
-            # the header+nonces. See EAPOL-TRUNCATION-RE.md. Kept for reference.
-            [ -f "$PATCHDIR/src/monitormode.c" ] && \
-              bash "$NXP/bcm4358-monitor-eapol-snoopcap.sh" "$PATCHDIR/src/monitormode.c"
+            # Full passive EAPOL: the truncation is in the d11 ucode (it DMAs
+            # only ~86 bytes of unprotected/EAPOL RX frames; encrypted frames pass
+            # whole). Reverse-engineered the ucode (arch 15) and patch the RX
+            # decrypt routine so the plaintext path takes the full-length copy.
+            # This is the real fix; the ARM snoopcap measurement is disabled.
+            FW_RAM="$(find firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }} -maxdepth 1 -name 'fw_bcmdhd.bin' 2>/dev/null | head -n1)"
+            [ -n "$FW_RAM" ] && bash "$NXP/bcm4358-ucode-eapol-fulllen.sh" "$FW_RAM"
+            # (ARM measurement DISABLED for the clean ucode test)
+            #[ -f "$PATCHDIR/src/monitormode.c" ] && \
+            #  bash "$NXP/bcm4358-monitor-eapol-snoopcap.sh" "$PATCHDIR/src/monitormode.c"
             # free() NULL guard: hook the heap free() at 0x18234c so a NULL
             # buffer (besside-ng RX/event path under load) no longer traps the
             # dongle (epc 0x182352). Only for the 300_14 build the offsets match.
