@@ -2845,19 +2845,19 @@ dhd_rx_mon_pkt(dhd_pub_t *dhdp, dhd_if_t *ifp, struct sk_buff *skb)
 		uint8 *d = (uint8 *)skb->data;
 		uint slen = skb->len;
 		if (!probe_count)
-			printf("DHD-MON-BUILD: eapol-probe v5 "
-			    "(sts->pktlength + post-cut bytes via radiotap)\n");
+			printf("DHD-MON-BUILD: eapol-probe v6 "
+			    "(RAM monitor-feed len 0x1a6d28 via radiotap)\n");
 		if (slen >= 24 && d[8] == 0x45 && d[9] == 0x50 &&
 		    d[10] == 0x4f && d[11] == 0x4c) {
 			uint p_len    = d[12] | (d[13] << 8);
-			uint pktlen   = d[14] | (d[15] << 8);
+			uint feed_len = d[14] | (d[15] << 8);
 			uint8 b90 = d[17], b91 = d[18], b92 = d[19], b93 = d[20];
 			if (probe_count < 24) {
 				probe_count++;
-				printf("NEXMON-EAPOL-FULL: p->len=%u sts->pktlength=%u "
+				printf("NEXMON-EAPOL-FEED: p->len=%u feed_len=%u "
 				    "post-cut[90..93]=%02x%02x%02x%02x "
-				    "(pktlength>p->len && nonzero => full data present)\n",
-				    p_len, pktlen, b90, b91, b92, b93);
+				    "(feed_len>96 => full frame at the RAM feed)\n",
+				    p_len, feed_len, b90, b91, b92, b93);
 			}
 		}
 	}

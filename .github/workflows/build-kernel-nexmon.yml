@@ -201,6 +201,9 @@ jobs:
             # dongle (epc 0x182352). Only for the 300_14 build the offsets match.
             if [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
               bash "$NXP/bcm4358-install-free-guard.sh" "$PATCHDIR/src" "$NXP"
+              # feed-probe: BLPatch 0x1a6d28 to record the packet length at the
+              # RAM monitor feed (decides if the full EAPOL is present there).
+              bash "$NXP/bcm4358-install-feed-probe.sh" "$PATCHDIR/src" "$NXP"
             fi
           fi
 

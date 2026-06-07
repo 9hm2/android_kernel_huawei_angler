@@ -44,11 +44,10 @@ probe = r'''
                 pd[_i+6]==0x88 && pd[_i+7]==0x8e) { _eo = _i; break; }
         }
         if (_eo >= 0) {
-            unsigned int _plen = *(volatile unsigned int *)
-                                     (((unsigned char *) sts) + 0x24); /* pktlength */
+            extern volatile unsigned int nexmon_feed_len;
             frame->tsf.tsf_l = 0x4c4f5045u;
             frame->tsf.tsf_h = ((unsigned int) p->len & 0xffff)
-                             | ((_plen & 0xffff) << 16);
+                             | ((nexmon_feed_len & 0xffff) << 16);
             /* 4 bytes at p->data[90..93] -> data_rate + chan_freq fields so the
              * kernel can tell real-data vs zero-pad past the 90-byte cut. */
             frame->data_rate = pd[90];
