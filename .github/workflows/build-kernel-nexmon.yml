@@ -192,6 +192,12 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
+            # DIAGNOSTIC: print p->len + bytes around the 96 boundary for EAPOL
+            # frames in wl_monitor_radiotap, to decide whether the EAPOL packet
+            # handed to the monitor tap is genuinely ~96 bytes (truncated
+            # upstream) or longer with just p->len short.
+            [ -f "$PATCHDIR/src/monitormode.c" ] && \
+              bash "$NXP/bcm4358-monitor-eapol-probe.sh" "$PATCHDIR/src/monitormode.c"
             # free() NULL guard: hook the heap free() at 0x18234c so a NULL
             # buffer (besside-ng RX/event path under load) no longer traps the
             # dongle (epc 0x182352). Only for the 300_14 build the offsets match.
