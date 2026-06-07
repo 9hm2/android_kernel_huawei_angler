@@ -192,14 +192,15 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
-            # Full passive EAPOL: capture the complete 802.3 EAPOL frame (incl.
-            # MIC) from the firmware snoop input (BL at 0x1a3372) and splice it
-            # into the truncated monitor frame, with body matching + p->len
-            # restore (no shared-packet corruption -> no association trap).
-            [ -f "$PATCHDIR/src/monitormode.c" ] && \
-              bash "$NXP/bcm4358-monitor-eapol-snoopcap.sh" "$PATCHDIR/src/monitormode.c"
-            # (DISABLED: bcm4358-monitor-eapol-fulllen.sh -- inflated p->len with
-            #  no MIC data; superseded by the snoop capture above.)
+            # Full passive EAPOL via snoop/classifier capture: DISABLED. Two
+            # independent capture points (snoop 0x1a3372, classifier 0x19ba1b)
+            # both only fire for our-BSS EAPOL, never for foreign monitor frames
+            # (on-device diag: g_eapol_len stayed 1). Combined with the raw-byte
+            # evidence (Key MIC zero past ~86B), the firmware does not retain the
+            # foreign unprotected EAPOL payload in monitor-reachable RAM -- only
+            # the header+nonces. See EAPOL-TRUNCATION-RE.md. Kept for reference.
+            #[ -f "$PATCHDIR/src/monitormode.c" ] && \
+            #  bash "$NXP/bcm4358-monitor-eapol-snoopcap.sh" "$PATCHDIR/src/monitormode.c"
             # free() NULL guard: hook the heap free() at 0x18234c so a NULL
             # buffer (besside-ng RX/event path under load) no longer traps the
             # dongle (epc 0x182352). Only for the 300_14 build the offsets match.
