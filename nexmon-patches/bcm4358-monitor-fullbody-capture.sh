@@ -95,15 +95,20 @@ wlc_recvdata_fullbody_monitor(struct wlc_info *wlc, unsigned char *rxhdr, struct
 
     if (is_eapol) {
         void *wlc_hw = wlc->hw;
+        unsigned int spr1e2;
         if (g_diagA_n < 0xffff) g_diagA_n++;
         diag_fill(g_eapol_diag, g_diagA_n, rxhdr, frame, plen);
-        // correlated d11 SHM snapshot AT the EAPOL moment:
-        //   [0..63]   = the 0B95 instrument stamps + neighbours (SHM byte 0x400..0x43F)
-        //   [64..159] = the live d11 rxhdr region (SHM word [0x838]=byte 0x1070 .. 0x10CF)
+        // correlated d11 SRAM (objmem sel 0x10000) snapshot AT the EAPOL moment:
+        //   [0..63]   = the 1032 instrument stamps (SRAM byte 0x400..0x43F);
+        //               the stamped spr1e2 is at [0x208] = byte 0x410 = shm[16..17]
+        //   [64..255] = the FULL frame at objmem(0x10000, spr1e2 + k), k=0..191
+        //               -- if bytes past ~96 are the real EAPOL tail (non-zero MIC),
+        //               the ARM tail re-pull is confirmed.
         for (i = 0; i < 64; i++)
             g_eapol_shm[i] = wlc_bmac_read_objmem_byte(wlc_hw, 0x400 + i, 0x10000);
-        for (i = 0; i < 96; i++)
-            g_eapol_shm[64 + i] = wlc_bmac_read_objmem_byte(wlc_hw, 0x1070 + i, 0x10000);
+        spr1e2 = g_eapol_shm[16] | (g_eapol_shm[17] << 8);
+        for (i = 0; i < 192; i++)
+            g_eapol_shm[64 + i] = wlc_bmac_read_objmem_byte(wlc_hw, spr1e2 + i, 0x10000);
     }
 
     // bucket B: keep the LARGEST data frame seen (a full-delivery sample to diff)
