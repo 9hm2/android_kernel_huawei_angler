@@ -215,7 +215,7 @@ jobs:
             # IV-free bookkeeping; protected path stays byte-identical; the 0B97
             # runt guard bounds the copy. Judge success via diag bucket A (cmd
             # 0x601): p->len should jump to ~143 with the Key MIC present.
-            UCODE_PATCH="bcm4358-ucode-instrument.sh"   # delivery build: bcm4358-ucode-fullrx-fix.sh
+            UCODE_PATCH="bcm4358-ucode-fullrx-fix.sh"   # measurement build: bcm4358-ucode-instrument.sh
             FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
             [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/$UCODE_PATCH" "$FWDIR/fw_bcmdhd.bin"
             if [ -f "$FWDIR/ucode.bin" ]; then

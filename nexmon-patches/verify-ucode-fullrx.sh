@@ -32,12 +32,16 @@ INSTR = {  # measurement build v2 (0B95 retargeted; stamps to host-readable [0x2
     off(0x1439): "990b000721000200",
     off(0x143A): "960bf0025e680000",
 }
-FIX = {    # delivery build (0AAE retargeted to the IV-free body-copy stub)
+FIX = {    # delivery build v2 (0AAE+0B95 retargeted; live spr00c, bit7 gate bypass)
     off(0x0AAE): "31140013c9030200",
-    off(0x1431): "6212008b47e00000",
+    off(0x1431): "6212003340b00000",
     off(0x1432): "6b08006b5ee00000",
-    off(0x1433): "4128080560800100",
+    off(0x1433): "41280805e0830100",
     off(0x1434): "b50af0025e680000",
+    off(0x0B95): "3514f0025e680000",
+    off(0x1435): "960b000721800200",
+    off(0x1436): "960b0007a1830200",
+    off(0x1437): "990bf0025e680000",
 }
 
 if uc[off(0x0AAE):off(0x0AAE)+8].hex() == FIX[off(0x0AAE)]:
