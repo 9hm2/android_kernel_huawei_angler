@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Inject the FULL-BODY foreign-plaintext (EAPOL) capture HookPatch into nexmon's
-# bcm4358 monitormode.c. Pairs with the d11 ucode kick (bcm4358-ucode-fullrx-fix.sh)
-# that streams the full body of unprotected foreign DATA frames into the host RX
-# lbuf. The ARM path wlc_recvdata drops those frames at 0x1a6cfc/0x1a6d00
-# (tst.w r3,#0x310 ; bne -> drop) BEFORE the monitor dispatch, because the copy
-# engine left RxStatus1 bits in 0x310 set. This HookPatch at 0x1a6cfc clones the
-# full lbuf to the monitor interface via the firmware's own wlc_monitor() before
-# the drop runs, so the complete EAPOL (with Key MIC) is captured. The original
-# tst/bne still drops the frame from the normal host RX path.
+# Inject the FULL-BODY foreign-plaintext (EAPOL) capture HookPatch + an on-device
+# DIAGNOSTIC recorder into nexmon's bcm4358 monitormode.c.
+#
+# Pairs with the d11 ucode kick. The hook sits at wlc_recvdata 0x1a6cfc (where
+# the firmware drops streamed plaintext DATA frames, just before the monitor
+# dispatch). For every frame reaching the hook it RECORDS into g_eapol_diag (read
+# back via the cmd 0x601 ioctl) the RX state, and for EAPOL frames also the frame
+# bytes -- so we can see on-device whether the body streamed (p->len) and why the
+# frame is/ isn't monitored. It also attempts the monitor clone (wlc_monitor).
 #
 # Usage: bcm4358-monitor-fullbody-capture.sh <monitormode.c>
 set -euo pipefail
@@ -28,40 +28,69 @@ if anchor not in src:
 
 hook = r'''
 ///////////////////////////////////////////////////////////////////////////////
-// FULL-BODY FOREIGN PLAINTEXT (EAPOL) CAPTURE HOOK
+// FULL-BODY FOREIGN PLAINTEXT (EAPOL) CAPTURE HOOK + DIAGNOSTIC RECORDER
 //
-// Pairs with the d11 ucode "kick" (spr260=0x7) that streams the full body of
-// unprotected foreign DATA frames into the host RX lbuf. wlc_recvdata (RAM
-// 0x1a6c84) drops these frames *before* the monitor dispatch (0x1a6d20), at:
-//     0x1a6cfa  ldrh r3,[r6,#4]      ; r6 = rxhdr, [r6+4] = RxStatus1
-//     0x1a6cfc  tst.w r3,#0x310      ; decrypt/seckindx status bits
-//     0x1a6d00  bne.w 0x1a6e7a       ; -> DROP (skips monitor dispatch)
-// The ucode copy engine leaves RxStatus1 bits in 0x310 set, so the streamed
-// plaintext frame is dropped before wlc_monitor can clone it. We HookPatch the
-// 4-byte tst at 0x1a6cfc: if monitor mode is on and this DATA frame is about to
-// be dropped by the 0x310 test, clone the full lbuf via the firmware's own
-// wlc_monitor() (p->len already = full streamed length, set at 0x1a6caa). The
-// original tst/bne then still drops the frame from the normal data path.
-// Live regs at the hook: r4=wlc, r5=p (lbuf), r6=rxhdr. HookPatch4 saves r0-r3,lr.
+// HookPatch at wlc_recvdata 0x1a6cfc (the streamed-plaintext drop site, just
+// before the monitor dispatch at 0x1a6d20). r4=wlc, r5=p, r6=rxhdr.
+//
+// g_eapol_diag layout (read via ioctl cmd 0x601, offset 0..255):
+//   [0..1]   total frames seen at the hook (LE16, saturating)
+//   [2..3]   EAPOL (88 8e) frames seen (LE16)
+//   [4..5]   clone attempts (LE16)
+//   [6..7]   last EAPOL p->len (LE16)  <-- >86 means the body streamed
+//   [8..9]   last EAPOL RxStatus1 (rxhdr[4..5])
+//   [10..11] last EAPOL RxStatus2 (rxhdr[6..7])
+//   [12..13] last EAPOL RxFrameSize (rxhdr[0..1])
+//   [14]     last EAPOL wlc->monitor (low byte)
+//   [15]     flags: bit0=rxs1&0x310, bit1=FCtype==DATA
+//   [16..159] last EAPOL frame bytes p->data[6 .. 6+143]
+
+static volatile unsigned short g_diag_seen   = 0;
+static volatile unsigned short g_diag_eapol  = 0;
+static volatile unsigned short g_diag_clones = 0;
+static unsigned char           g_eapol_diag[256] = { 0xff };
 
 extern void *wlc_monitor(void *wlc, void *wrxh, void *p, int wlc_if);
 
 void
 wlc_recvdata_fullbody_monitor(struct wlc_info *wlc, unsigned char *rxhdr, struct sk_buff *p)
 {
-    unsigned short rxs1;
-    unsigned char *frame;
+    unsigned char *frame = (unsigned char *)p->data + 6;
+    unsigned int plen = p->len;
+    unsigned short rxs1 = *(unsigned short *)(rxhdr + 4);
+    unsigned int i;
+    int is_eapol = 0;
 
-    if (!wlc->monitor)
-        return;
-    rxs1 = *(unsigned short *)(rxhdr + 4);   // RxStatus1
-    if (!(rxs1 & 0x310))
-        return;
-    frame = (unsigned char *)p->data + 6;    // 802.11 FrameControl (6-byte phy prefix)
-    if ((frame[0] & 0x0c) != 0x08)           // DATA == 0x08
-        return;
-    wlc_monitor(wlc, rxhdr, p, 0);
+    if (g_diag_seen < 0xffff) g_diag_seen++;
+
+    // identify EAPOL by the LLC/SNAP ethertype 0x888e in the first ~40 bytes
+    for (i = 0; i + 1 < 40 && i + 1 < plen; i++)
+        if (frame[i] == 0x88 && frame[i + 1] == 0x8e) { is_eapol = 1; break; }
+
+    if (is_eapol) {
+        if (g_diag_eapol < 0xffff) g_diag_eapol++;
+        g_eapol_diag[0]  = g_diag_seen;       g_eapol_diag[1]  = g_diag_seen >> 8;
+        g_eapol_diag[2]  = g_diag_eapol;      g_eapol_diag[3]  = g_diag_eapol >> 8;
+        g_eapol_diag[6]  = plen;              g_eapol_diag[7]  = plen >> 8;
+        g_eapol_diag[8]  = rxhdr[4];          g_eapol_diag[9]  = rxhdr[5];
+        g_eapol_diag[10] = rxhdr[6];          g_eapol_diag[11] = rxhdr[7];
+        g_eapol_diag[12] = rxhdr[0];          g_eapol_diag[13] = rxhdr[1];
+        g_eapol_diag[14] = (unsigned char) wlc->monitor;
+        g_eapol_diag[15] = ((rxs1 & 0x310) ? 1 : 0) | (((frame[0] & 0x0c) == 0x08) ? 2 : 0);
+        for (i = 0; i < 144 && i < plen; i++)
+            g_eapol_diag[16 + i] = frame[i];
+    }
+
+    // capture attempt: clone the full frame to monitor before the drop
+    if (wlc->monitor && (rxs1 & 0x310) && (frame[0] & 0x0c) == 0x08) {
+        if (g_diag_clones < 0xffff) g_diag_clones++;
+        g_eapol_diag[4] = g_diag_clones; g_eapol_diag[5] = g_diag_clones >> 8;
+        wlc_monitor(wlc, rxhdr, p, 0);
+    }
 }
+
+unsigned char *
+nexmon_eapol_diag_ptr(void) { return g_eapol_diag; }
 
 __attribute__((naked)) void
 wlc_recvdata_fullbody_monitor_trampoline(void)
@@ -80,5 +109,5 @@ HookPatch4(wlc_recvdata_fullbody, wlc_recvdata_fullbody_monitor_trampoline, "tst
 '''
 src = src.replace(anchor, anchor + hook, 1)
 open(path, "w").write(src)
-print("fullbody-capture: injected wlc_recvdata HookPatch into", path)
+print("fullbody-capture: injected wlc_recvdata HookPatch + diag recorder into", path)
 PY

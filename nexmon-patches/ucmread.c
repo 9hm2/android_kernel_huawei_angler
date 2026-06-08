@@ -34,13 +34,16 @@ struct nex_ioctl {
 
 int main(int argc, char **argv)
 {
-    if (argc != 4) {
-        fprintf(stderr, "usage: %s <ifname> <hex_offset> <len(1..256)>\n", argv[0]);
+    if (argc != 4 && argc != 5) {
+        fprintf(stderr, "usage: %s <ifname> <hex_offset> <len(1..256)> [cmd=0x600]\n"
+                        "  cmd 0x600 = read live d11 UCM at offset; 0x601 = read EAPOL RX diag buffer\n",
+                argv[0]);
         return 2;
     }
     const char  *ifname = argv[1];
     unsigned int offset = (unsigned int) strtoul(argv[2], NULL, 0);
     unsigned int length = (unsigned int) strtoul(argv[3], NULL, 0);
+    unsigned int cmd    = (argc == 5) ? (unsigned int) strtoul(argv[4], NULL, 0) : CMD_READ_UCM;
     if (length == 0 || length > 256) { fprintf(stderr, "len must be 1..256\n"); return 2; }
 
     unsigned int buflen = length < 8 ? 8 : length;
@@ -51,7 +54,7 @@ int main(int argc, char **argv)
 
     struct nex_ioctl ioc;
     memset(&ioc, 0, sizeof(ioc));
-    ioc.cmd    = CMD_READ_UCM;
+    ioc.cmd    = cmd;
     ioc.buf    = buf;
     ioc.len    = buflen;
     ioc.set    = false;

@@ -49,6 +49,15 @@ case_code = (
 "            }\n"
 "        }\n"
 "        break;\n\n"
+"        case 0x601: // 1537: read the EAPOL RX diagnostic buffer (g_eapol_diag)\n"
+"        {\n"
+"            extern unsigned char *nexmon_eapol_diag_ptr(void);\n"
+"            unsigned char *diag = nexmon_eapol_diag_ptr();\n"
+"            int i; int n = len; if (n > 256) n = 256;\n"
+"            for (i = 0; i < n; i++) arg[i] = (char) diag[i];\n"
+"            ret = IOCTL_SUCCESS;\n"
+"        }\n"
+"        break;\n\n"
 )
 s = s.replace(case_anchor, case_code + case_anchor, 1)
 open(p, "w").write(s)
