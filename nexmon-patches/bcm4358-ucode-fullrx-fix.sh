@@ -38,24 +38,32 @@ python3 - "$F" <<'PY'
 import sys
 path = sys.argv[1]
 d = bytearray(open(path, 'rb').read())
+# Patch by exact instruction INDEX (the dead-space words are not byte-unique, so
+# search-replace cannot be used). The ucode lives at offset 0 in the extracted
+# ucode.bin, and at UCODESTART-RAMSTART = 0x8c9c0 in the firmware image.
+UCODE_BASE_IN_FW = 0x8c9c0
+base = 0 if len(d) < 0x20000 else UCODE_BASE_IN_FW
+# (instr_index, old_hex, new_hex, label)
 patches = [
-    ("41280801e0810100", "315400ab5e680000", "0B86 -> je r42,0x2 ->1431 (DATA-only gate)"),
-    ("8017009705b00000", "4128080560880100", "1431 set [0x841] bit0=1"),
-    ("53342c005e680000", "6212008b47b00000", "1432 spr262=spr1e2 (no IV skip)"),
-    ("1211000360bc0100", "6bc8016b5ee00000", "1433 [0x86B]=r26+0xE (full length)"),
-    ("1511000360bc0100", "870b000080bf0300", "1434 jext 0x7F ->0B87 (rejoin)"),
+    (0x0B86, "41280801e0810100", "315400ab5e680000", "0B86 -> je r42,0x2 ->1431 (DATA-only gate)"),
+    (0x1431, "8017009705b00000", "4128080560880100", "1431 set [0x841] bit0=1"),
+    (0x1432, "53342c005e680000", "6212008b47b00000", "1432 spr262=spr1e2 (no IV skip)"),
+    (0x1433, "1211000360bc0100", "6bc8016b5ee00000", "1433 [0x86B]=r26+0xE (full length)"),
+    (0x1434, "1511000360bc0100", "870b000080bf0300", "1434 jext 0x7F ->0B87 (rejoin)"),
 ]
-done = 0
-for old_h, new_h, label in patches:
-    old, new = bytes.fromhex(old_h), bytes.fromhex(new_h)
-    n_old, n_new = d.count(old), d.count(new)
-    if n_new >= 1 and n_old == 0:
-        print("ucode-fullrx: %s already patched [%s]" % (path, label)); done += 1; continue
-    if n_old != 1:
-        sys.stderr.write("ucode-fullrx: expected exactly 1 site for %s in %s, found %d "
-                         "(and %d patched) -- aborting\n" % (label, path, n_old, n_new)); sys.exit(1)
-    off = d.find(old); d[off:off+8] = new
-    print("ucode-fullrx: patched %s @0x%x  %s" % (path, off, label)); done += 1
-if done == len(patches):
-    open(path, 'wb').write(d)
+# anchor sanity: ucode[0] must be the known first instruction
+if bytes(d[base:base+8]) != bytes.fromhex("4e10000360bc0100"):
+    sys.stderr.write("ucode-fullrx: ucode anchor not at base 0x%x in %s -- aborting\n" % (base, path))
+    sys.exit(1)
+for idx, old_h, new_h, label in patches:
+    off = base + idx * 8
+    cur = bytes(d[off:off+8])
+    if cur == bytes.fromhex(new_h):
+        print("ucode-fullrx: %s @0x%x already patched [%s]" % (path, off, label)); continue
+    if cur != bytes.fromhex(old_h):
+        sys.stderr.write("ucode-fullrx: %s @0x%x expected %s got %s [%s] -- aborting\n"
+                         % (path, off, old_h, cur.hex(), label)); sys.exit(1)
+    d[off:off+8] = bytes.fromhex(new_h)
+    print("ucode-fullrx: patched %s @0x%x  %s" % (path, off, label))
+open(path, 'wb').write(d)
 PY
