@@ -236,27 +236,11 @@ jobs:
           fi
 
           # GUARD: assert the d11 ucode RXLEN-DIAG patch is actually embedded in
-          # the BUILT firmware (decompress the re-compressed ucode blob and check
-          # the patched instruction word at 0x6830 = idx 0x0D06). Catches stale
-          # artifacts / a compression step that silently dropped the patch, and
-          # prints the built fw md5 so on-device md5sum can confirm what's flashed.
+          # the BUILT firmware (delegated to a script so no inline Python lives in
+          # this YAML). Prints the built fw md5 for on-device md5sum comparison.
           if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
              [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
-            python3 - "$FW" <<'PYEOF'
-import sys, zlib, hashlib
-d = open(sys.argv[1], 'rb').read()
-i = d.find(b'\x78\x9c', 0x8d000)            # nexmon-recompressed ucode blob
-if i < 0:
-    sys.exit("::error::ucode-guard: no compressed ucode blob found in built fw")
-uc = zlib.decompress(d[i:])
-ok = uc[0x6830:0x6838] == bytes.fromhex("a117103340e00000")   # 0D06 add spr00c,0x80,r33
-print("ucode-guard: blob@0x%x len 0x%x; 0x6830=%s" %
-      (i, len(uc), uc[0x6830:0x6838].hex()))
-print("ucode-guard: built fw md5 =", hashlib.md5(d).hexdigest())
-if not ok:
-    sys.exit("::error::ucode-guard: RXLEN-DIAG patch NOT present in built ucode")
-print("ucode-guard: RXLEN-DIAG ucode patch confirmed embedded.")
-PYEOF
+            bash "$NXP/verify-ucode-diag.sh" "$FW"
           fi
 
           # Binary (address-based) patch applied to the LINKED firmware, after
