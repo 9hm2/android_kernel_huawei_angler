@@ -13,12 +13,15 @@ i = d.find(b'\x78\x9c', 0x8d000)
 if i < 0:
     sys.exit("::error::ucode-guard: no compressed ucode blob found in built fw")
 uc = zlib.decompress(d[i:])
-got = uc[0x5c28:0x5c30]
-print("ucode-guard: blob@0x%x len 0x%x; 0x5c28=%s" % (i, len(uc), got.hex()))
+aae = uc[0x5570:0x5578]   # 0AAE
+b85 = uc[0x5c28:0x5c30]   # 0B85
+print("ucode-guard: blob@0x%x len 0x%x; 0x5570=%s 0x5c28=%s" % (i, len(uc), aae.hex(), b85.hex()))
 print("ucode-guard: built fw md5 =", hashlib.md5(d).hexdigest())
-if got == bytes.fromhex("e011005760a20100"):
-    sys.exit("::error::ucode-guard: 0B85 still spr1e0=0x50 -- full-RX fix NOT applied")
-if got != bytes.fromhex("e011007760a20100"):
-    sys.exit("::error::ucode-guard: 0B85 = %s unexpected" % got.hex())
-print("ucode-guard: full-RX fix confirmed embedded (0B85 spr1e0=0xD0, body-stream on).")
+if aae != bytes.fromhex("b10a0013c9030200"):
+    sys.exit("::error::ucode-guard: 0AAE not retargeted ->0AB1 (got %s)" % aae.hex())
+if b85 != bytes.fromhex("e011007760a20100"):
+    sys.exit("::error::ucode-guard: 0B85 not spr1e0=0xD0 (got %s)" % b85.hex())
+print("ucode-guard: full-RX fix confirmed embedded (0AAE->0AB1 + 0B85 body-stream on).")
+print("ucode-guard: on-device verify: ucmread wlan0 0x5570 8 -> b10a0013c9030200; "
+      "ucmread wlan0 0x5C28 8 -> e011007760a20100")
 PY

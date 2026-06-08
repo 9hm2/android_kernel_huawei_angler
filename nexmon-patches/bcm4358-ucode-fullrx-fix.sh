@@ -32,15 +32,29 @@ python3 - "$F" <<'PY'
 import sys
 path = sys.argv[1]
 d = bytearray(open(path, 'rb').read())
-old = bytes.fromhex("e011005760a20100")   # 0B85 orx 4,4,0x15,0x0,spr1e0  (spr1e0=0x50)
-new = bytes.fromhex("e011007760a20100")   # 0B85 orx 4,4,0x1D,0x0,spr1e0  (spr1e0=0xD0, bit6 set)
-n_old, n_new = d.count(old), d.count(new)
-if n_new >= 1 and n_old == 0:
-    print("ucode-fullrx: %s already patched" % path); sys.exit(0)
-if n_old != 1:
-    sys.stderr.write("ucode-fullrx: expected exactly 1 site in %s, found %d (and %d patched)"
-                     " -- aborting\n" % (path, n_old, n_new)); sys.exit(1)
-off = d.find(old); d[off:off+8] = new
-open(path, 'wb').write(d)
-print("ucode-fullrx: patched %s @0x%x  0B85 spr1e0 0x50->0xD0 (set body-stream bit6)" % (path, off))
+# Two edits make the no-key (unprotected) RX path actually fire the body-copy
+# DMA kick (0B98 spr260=0x7), which is gated at 0B95 by [0x841] bit0:
+#   (1) 0AAE jzx spr244 ->0AB5  =>  ->0AB1 : run the setup block 0AB1-0AB4 on the
+#       no-key path so [0x841] bit0=1 (unblocks 0B95), spr262 + [0x86B] are set.
+#   (2) 0B85 orx 4,4,0x15->0x1D : keep spr1e0 bit6 (PSDU-body-stream-to-host) set
+#       on the header-only landing (0xD0 = the value 0x0A8A already uses for
+#       normal non-encrypted full RX).
+# Protected/mgmt-with-key RX is byte-identical (0AAE only branches when no key).
+patches = [
+    ("b50a0013c9030200", "b10a0013c9030200", "0AAE jzx spr244 ->0AB5 => ->0AB1 (run setup, set [0x841].0)"),
+    ("e011005760a20100", "e011007760a20100", "0B85 spr1e0 0x50->0xD0 (body-stream bit6)"),
+]
+done = 0
+for old_h, new_h, label in patches:
+    old, new = bytes.fromhex(old_h), bytes.fromhex(new_h)
+    n_old, n_new = d.count(old), d.count(new)
+    if n_new >= 1 and n_old == 0:
+        print("ucode-fullrx: %s already patched [%s]" % (path, label)); done += 1; continue
+    if n_old != 1:
+        sys.stderr.write("ucode-fullrx: expected exactly 1 site for %s in %s, found %d "
+                         "(and %d patched) -- aborting\n" % (label, path, n_old, n_new)); sys.exit(1)
+    off = d.find(old); d[off:off+8] = new
+    print("ucode-fullrx: patched %s @0x%x  %s" % (path, off, label)); done += 1
+if done == len(patches):
+    open(path, 'wb').write(d)
 PY
