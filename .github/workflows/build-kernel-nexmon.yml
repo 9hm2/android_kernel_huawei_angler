@@ -235,14 +235,6 @@ jobs:
             exit 1
           fi
 
-          # GUARD: assert the d11 ucode RXLEN-DIAG patch is actually embedded in
-          # the BUILT firmware (delegated to a script so no inline Python lives in
-          # this YAML). Prints the built fw md5 for on-device md5sum comparison.
-          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
-             [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
-            bash "$NXP/verify-ucode-diag.sh" "$FW"
-          fi
-
           # Binary (address-based) patch applied to the LINKED firmware, after
           # make: defuse the WPS state-machine panic at 0x18554a so a reaver/
           # bully attack no longer traps the dongle (epc 0x0e0e0e10). Verifies
@@ -251,10 +243,16 @@ jobs:
           if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
              [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
             bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-wps-assert-defuse.sh" "$FW"
-            # NOTE: monitor-mode EAPOL truncation is NOT fixed — RE proved it
-            # happens in ROM (wlc_monitor / its EAPOL handler) before any
-            # RAM/nexmon code runs, with no free flashpatch slot. Not patchable
-            # on this chip/firmware. See nexmon-patches/EAPOL-TRUNCATION-RE.md.
+          fi
+
+          # GUARD: assert the d11 ucode RXLEN-DIAG patch is embedded in the FINAL
+          # firmware (run AFTER all binary patches so the printed md5 is exactly
+          # what gets bundled + flashed -- i.e. matches the on-device
+          # `md5sum /vendor/firmware/fw_bcmdhd.bin`). Delegated to a script so no
+          # inline Python lives in this YAML.
+          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
+             [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
+            bash "$NXP/verify-ucode-diag.sh" "$FW"
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/anykernel/firmware"
@@ -353,6 +351,18 @@ jobs:
             echo "::warning::hwdb.bin not staged; lsusb name lookup asset unavailable"
           fi
 
+          # Stage the nexmon-patched fw_bcmdhd.bin as a STANDALONE release asset
+          # so it can be installed straight to /vendor/firmware on a rooted device
+          # without unzip or the AnyKernel write path (the recurring deployment
+          # failure point): `curl -L -o /vendor/firmware/fw_bcmdhd.bin <url>`.
+          if [ -f "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin" ]; then
+            cp "$GITHUB_WORKSPACE/anykernel/firmware/fw_bcmdhd.bin" "$GITHUB_WORKSPACE/fw_bcmdhd.bin"
+            FW_MD5="$(md5sum "$GITHUB_WORKSPACE/fw_bcmdhd.bin" | cut -d' ' -f1)"
+            printf '%s' "$FW_MD5" > "$GITHUB_WORKSPACE/fw_bcmdhd.bin.md5"
+            echo "FW_MD5=$FW_MD5" >> "$GITHUB_ENV"
+            echo "staged standalone fw_bcmdhd.bin (md5 $FW_MD5)"
+          fi
+
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
@@ -387,6 +397,16 @@ jobs:
             and installs the bundled `fw_bcmdhd.bin` (a backup of the stock
             firmware is kept as `fw_bcmdhd.bin.stock`).
 
+            **fw_bcmdhd.bin md5: `${{ env.FW_MD5 }}`** — after boot,
+            `md5sum /vendor/firmware/fw_bcmdhd.bin` must equal this. If it does
+            not, the AnyKernel firmware write did not take; install the standalone
+            `fw_bcmdhd.bin` asset directly from a rooted shell:
+
+                mount -o remount,rw /system; mount -o remount,rw /vendor
+                curl -L -o /vendor/firmware/fw_bcmdhd.bin \
+                  https://github.com/${{ github.repository }}/releases/download/${{ env.TAG_NAME }}/fw_bcmdhd.bin
+                sync; md5sum /vendor/firmware/fw_bcmdhd.bin   # must match above
+
             `hwdb.bin` is attached separately (it is NOT in the zip). It fixes
             `lsusb` ("unable to initialize usb spec") inside the Kali chroot.
             Install it manually from the chroot, e.g.:
@@ -398,5 +418,7 @@ jobs:
             anykernel/chroot-extras/README.txt.
           files: |
             ${{ env.ZIP_NAME }}
+            fw_bcmdhd.bin
+            fw_bcmdhd.bin.md5
             hwdb.bin
           fail_on_unmatched_files: false
