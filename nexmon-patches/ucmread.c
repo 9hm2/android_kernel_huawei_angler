@@ -36,8 +36,12 @@ int main(int argc, char **argv)
 {
     if (argc != 4 && argc != 5) {
         fprintf(stderr, "usage: %s <ifname> <hex_offset> <len(1..256)> [cmd=0x600]\n"
-                        "  cmd 0x600 = read live d11 UCM at offset; 0x601 = read EAPOL RX diag buffer\n",
-                argv[0]);
+                        "  cmd 0x600 = read live d11 UCM at offset (UCM[x]==ucode.bin[x])\n"
+                        "  cmd 0x601 = read EAPOL RX diag bucket A; 0x602 = full-DATA diag bucket B\n"
+                        "      bucket layout: [0..1]count [2..3]p->len [4..35]rxhdr[0..31] [36..255]frame\n"
+                        "  cmd 0x603 = read d11 SHM: <hex_offset>=SHM word*2 byte addr, <len>=#words\n"
+                        "      e.g. read 8 SHM words from word 0x880:  %s wlan0 0x1100 8 0x603\n",
+                argv[0], argv[0]);
         return 2;
     }
     const char  *ifname = argv[1];
