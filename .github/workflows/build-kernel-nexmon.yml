@@ -194,17 +194,17 @@ jobs:
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
             # NON-DESTRUCTIVE ucode-efficacy verification. Inject a read-back
             # ioctl (cmd 0x600) that reads the LIVE d11 UCM, and apply the
-            # detectable spr223=64 ucode patch (confirmed non-destructive: Wi-Fi
-            # worked, frames up to 891 B). On device, `ucmread wlan0 0xE40 8`
-            # returns 2312000361b00000 if the patched ucode is live, or
-            # 2392004748e80000 if it never reached the d11 (deployment bug).
+            # one-byte full-RX fix (0B85 spr1e0 bit6) -- also non-destructive (protected/mgmt
+            # RX byte-identical). On device, `ucmread wlan0 0x5C28 8`
+            # returns e011007760a20100 if the patched ucode is live, or
+            # e011005760a20100 if it never reached the d11 (deployment bug).
             # Anchor: `ucmread wlan0 0x000 8` must read 4e10000360bc0100.
             [ -f "$PATCHDIR/src/ioctl.c" ] && \
               bash "$NXP/bcm4358-add-ucmread-ioctl.sh" "$PATCHDIR/src/ioctl.c"
             FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
-            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-dmalen-test.sh" "$FWDIR/fw_bcmdhd.bin"
+            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-fullrx-fix.sh" "$FWDIR/fw_bcmdhd.bin"
             if [ -f "$FWDIR/ucode.bin" ]; then
-              bash "$NXP/bcm4358-ucode-dmalen-test.sh" "$FWDIR/ucode.bin"
+              bash "$NXP/bcm4358-ucode-fullrx-fix.sh" "$FWDIR/ucode.bin"
               touch "$FWDIR/ucode.bin"
             fi
             # (ARM measurement DISABLED for the clean ucode test)
@@ -249,7 +249,7 @@ jobs:
           # inline Python lives in this YAML.
           if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
              [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
-            bash "$NXP/verify-ucode-dmalen.sh" "$FW"
+            bash "$NXP/verify-ucode-fullrx.sh" "$FW"
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/anykernel/firmware"
