@@ -19,17 +19,18 @@ print("ucode-guard: built fw md5 =", hashlib.md5(d).hexdigest())
 # instruction index*8 = byte offset in the ucode image
 def off(idx): return idx * 8
 
-INSTR = {  # measurement build (0B95 retargeted to the stamp block)
+INSTR = {  # measurement build v2 (0B95 retargeted; stamps to host-readable [0x200]+)
     off(0x0B95): "3114f0025e680000",
-    off(0x1431): "9008008b49b00000",
-    off(0x1432): "910800af21b00000",
-    off(0x1433): "92484cae21e80000",
-    off(0x1434): "9308003340b00000",
-    off(0x1435): "9408000721b00000",
-    off(0x1436): "950800e320b00000",
-    off(0x1437): "9608004748b00000",
-    off(0x1438): "990b000721000200",
-    off(0x1439): "960bf0025e680000",
+    off(0x1431): "000200976eb00000",
+    off(0x1432): "0102008b49b00000",
+    off(0x1433): "020200af21b00000",
+    off(0x1434): "03424cae21e80000",
+    off(0x1435): "0402003340b00000",
+    off(0x1436): "0502000721b00000",
+    off(0x1437): "0602004748b00000",
+    off(0x1438): "070200e320b00000",
+    off(0x1439): "990b000721000200",
+    off(0x143A): "960bf0025e680000",
 }
 FIX = {    # delivery build (0AAE retargeted to the IV-free body-copy stub)
     off(0x0AAE): "31140013c9030200",
