@@ -207,10 +207,19 @@ jobs:
             # Anchor: `ucmread wlan0 0x000 8` must read 4e10000360bc0100.
             [ -f "$PATCHDIR/src/ioctl.c" ] && \
               bash "$NXP/bcm4358-add-ucmread-ioctl.sh" "$PATCHDIR/src/ioctl.c"
+            # BUILD 1 = INSTRUMENTATION (safe measurement): stamp the live DAGG
+            # body-copy bookkeeping into spare SHM 0x890..0x896 so the protected
+            # (full) and unprotected (truncated EAPOL) paths can be MEASURED on the
+            # chip via ioctl cmd 0x603 -- replacing the unreliable offline emulator.
+            # Behaviour is byte-identical (the 0B95 gate is replicated exactly), so
+            # this cannot break Wi-Fi. Once the measurement validates the body-copy
+            # parameters, swap to bcm4358-ucode-fullrx-fix.sh (the IV-free body-copy
+            # fix that delivers the full EAPOL incl. Key MIC).
+            UCODE_PATCH="bcm4358-ucode-instrument.sh"   # build 2: bcm4358-ucode-fullrx-fix.sh
             FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
-            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-fullrx-fix.sh" "$FWDIR/fw_bcmdhd.bin"
+            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/$UCODE_PATCH" "$FWDIR/fw_bcmdhd.bin"
             if [ -f "$FWDIR/ucode.bin" ]; then
-              bash "$NXP/bcm4358-ucode-fullrx-fix.sh" "$FWDIR/ucode.bin"
+              bash "$NXP/$UCODE_PATCH" "$FWDIR/ucode.bin"
               touch "$FWDIR/ucode.bin"
             fi
             # (ARM measurement DISABLED for the clean ucode test)

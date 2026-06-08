@@ -1,43 +1,36 @@
 #!/usr/bin/env bash
-# THE FIX (clean, RE'd): deliver the FULL unprotected foreign DATA frame (WPA2
-# EAPOL incl. Key MIC) to the host monitor on the BCM4358 d11, without touching
-# the shared CCMP cipher path (so protected RX stays byte-identical) and without
-# regressing management frames.
+# THE FIX (static-RE'd, verified): deliver the FULL unprotected foreign DATA frame
+# (WPA2 EAPOL incl. Key MIC) to the host monitor on the BCM4358 d11, by firing the
+# d11 DAGG body copy (cmd=7) on the plaintext RX path with IV-free bookkeeping.
 #
-# Mechanism: unprotected (no-decrypt) frames reach the shared landing 0x0B85 via
-# 0x0B1E (rxhdr bit14==0). The body-copy DMA kick is 0x0B98 (spr260=0x7), gated
-# at 0x0B95 by [0x841] bit0. On the plaintext path [0x841] bit0=0 and spr262/
-# [0x86B] are unset, so the kick never fires -> only the ~86B header reaches the
-# host. The earlier reroute through the shared cipher block (0AB1-0AB4) DID fire
-# the kick but applied CCMP's +0xC IV skip (0AB2) to plaintext -> 12-byte
-# misalignment / dropped frames, and it cannot be edited in place (shared with
-# real CCMP RX).
+# Mechanism (confirmed from the binary, NOT the emulator):
+#   The body copy at 0B96-0B98 (spr260=7) is gated at 0B95 by [0x841] bit0, which
+#   is set ONLY on the protected path (0AB1). Protected frames also set spr262 =
+#   machdr_off+0xC (CCMP IV skip) and [0x86B] = framelen+0xE. The unprotected path
+#   (0AAE jumps to 0AB5) skips all of that, so [0x841] bit0 stays 0 and the body
+#   copy never fires -> only the ~86B cmd=1 lookahead reaches the host (no MIC).
 #
-# THE BUG in the prior attempt: [0x841] bit0 is RXS_AMSDU_MASK. Setting it to
-# pass the 0B95 kick gate marked plaintext DATA frames as A-MSDU, so the host's
-# wlc_recvdata tried to de-aggregate a plain EAPOL frame and DROPPED it (mgmt
-# never sets AMSDU -> survived). Fix: arm the full body copy (spr260=0x7)
-# DIRECTLY without ever touching [0x841] (no AMSDU), so the frame is delivered
-# intact. spr262/[0x86B] are stale on the plaintext path (0AB2/0AB3 + the
-# 0B1F-0B81 descriptor block are skipped via 0AAE->0AB5 / 0B1E->0B85), so set
-# them explicitly with NO IV skip.
+# The fix retargets 0AAE's UNPROTECTED branch into the orphaned dead block at 1431
+# (provably unreferenced: 1430 is a rets, nothing outside 1431-143F targets it) and
+# runs an IV-FREE setup, then returns to the shared landing 0AB5:
+#   1431: spr262  = machdr_off   (NO +0xC IV skip)
+#   1432: [0x86B] = framelen     (NO crypto trailer)
+#   1433: [0x841] bit0 = 1       (enable the 0B95 kick gate; bit0 alone, not AMSDU bit1)
+#   1434: je r0,r0 -> 0AB5       (return to shared path)
+# Then 0B96 computes spr261 = [0x86B]-spr262 = framelen-machdr_off (full body), the
+# 0B97 guard (`jles spr261,0xE -> 0B99`) drops runts, and 0B98 kicks cmd=7. The body
+# APPENDS after the lookahead; spr00c grows to the full length; 0D0C delivers it.
 #
-# Clean fix (6 words; image size unchanged): gate the no-op slot 0x0B86 to DATA
-# frames and run an IV-free setup that arms the body copy DIRECTLY in dead
-# microcode space (0x1431-0x1435, orphaned after a rets at 0x1430; no branch
-# targets it), then resume at 0x0B87:
-#   0B86: orx(no-op) -> je r42,0x2 ->1431   (DATA-only gate; mgmt/non-DATA fall
-#                                            through to 0B87 unchanged)
-#   1431: -> or  spr1e2,0x0,spr262          ; spr262=spr1e2 (NO +0xC IV skip)
-#   1432: -> add r26,0xE,[0x86B]            ; [0x86B]=full length
-#   1433: -> sub [0x86B],spr262,spr261      ; spr261=body length
-#   1434: -> orx 7,8,0,7,spr260             ; arm full body copy (NO AMSDU bit)
-#   1435: -> jext 0x7F ->0B87               ; resume normal DATA finalization
-# [0x841] is NEVER written, so bit0 (RXS_AMSDU) stays 0 -> host does not
-# de-aggregate -> EAPOL delivered intact. spr1e0 already has bit6 (0x50) at 0B85.
-# Protected RX: 0AAE/0AB1-0AB4/0B85 byte-identical (reaches 0B87 via 0B84,
-# skipping 0B86). Management (r42!=2): 0B86 falls through to 0B87, no copy armed
-# -> byte-identical.
+# Protected path: byte-for-byte unchanged (still falls through 0AAE->0AAF->0AB1).
+# spr064 is NOT touched (it is the WEP/crypto FIFO pointer, unused by the DAGG cmd=7
+# copy -- the source of the earlier "stale spr262" corruption was wrongly blamed on
+# a missing spr064 by the emulator).
+#
+# NOTE on the 0B97 runt guard: spr261 = framelen - machdr_off. For any real EAPOL
+# frame framelen >> machdr_off so spr261 is comfortably positive; the 0B97 `jles
+# 0xE` guard skips frames whose body is <=14 bytes (incl. an underflow on a
+# malformed runt), so the DAGG copy count never goes wild. This is the same guard
+# the working protected path relies on.
 #
 # Usage: bcm4358-ucode-fullrx-fix.sh <ucode.bin | fw_bcmdhd.bin>
 set -euo pipefail
@@ -48,19 +41,17 @@ python3 - "$F" <<'PY'
 import sys
 path = sys.argv[1]
 d = bytearray(open(path, 'rb').read())
-# Patch by exact instruction INDEX (the dead-space words are not byte-unique, so
-# search-replace cannot be used). The ucode lives at offset 0 in the extracted
-# ucode.bin, and at UCODESTART-RAMSTART = 0x8c9c0 in the firmware image.
 UCODE_BASE_IN_FW = 0x8c9c0
 base = 0 if len(d) < 0x20000 else UCODE_BASE_IN_FW
-# (instr_index, old_hex, new_hex, label)
+# (instr_index, old_hex, new_hex, label) -- all verified against ucode_real.bin
+# and re-decoded with d11dasm.py (arch15).
 patches = [
-    (0x0A9B, "9faa034fde680000", "9caa034fde680000", "0A9B jne r19,0x1D retarget ->0A9F => ->0A9C"),
-    (0x0A9C, "9317006749290100", "9f0a0013c9830200", "0A9C jnzx 0,7,spr244 ->0A9F (protected: skip the raise)"),
-    (0x0A9D, "9faa064f5e680000", "6112008f47b00000", "0A9D spr261(DAGG_BYTESLEFT)=spr1e3 (full frame length)"),
-    (0x0A9E, "9337004f5ea90100", "6212000360b00000", "0A9E spr262(DAGG_SH_OFFSET)=0 (no crypto offset)"),
+    (0x0AAE, "b50a0013c9030200", "31140013c9030200", "0AAE jzx spr244 bit7 ->1431 (retarget UNPROTECTED branch to fix stub)"),
+    (0x1431, "8017009705b00000", "6212008b47e00000", "1431 spr262 = spr1e2 (machdr_off, IV-free)"),
+    (0x1432, "53342c005e680000", "6b08006b5ee00000", "1432 [0x86B] = r26 (framelen, no crypto trailer)"),
+    (0x1433, "1211000360bc0100", "4128080560800100", "1433 [0x841] bit0 = 1 (enable 0B95 kick gate)"),
+    (0x1434, "1511000360bc0100", "b50af0025e680000", "1434 je r0,r0 ->0AB5 (return to shared landing)"),
 ]
-# anchor sanity: ucode[0] must be the known first instruction
 if bytes(d[base:base+8]) != bytes.fromhex("4e10000360bc0100"):
     sys.stderr.write("ucode-fullrx: ucode anchor not at base 0x%x in %s -- aborting\n" % (base, path))
     sys.exit(1)
