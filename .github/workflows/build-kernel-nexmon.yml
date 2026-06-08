@@ -192,25 +192,23 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
-            # Full passive EAPOL FIX (d11 ucode root cause). The copy engine
-            # streams the RX PSDU body FIFO->host under spr1e0(enable)+spr064
-            # (source ptr)+spr1e3(length). Unprotected frames land at 0x0B85 with
-            # the engine enabled and spr1e3=full length but spr064 NEVER set (it
-            # is set only on the cipher path at 0x0B65), so the engine stalls at
-            # the ~86-byte header copy. CCMP frames set spr064 and arrive full.
-            # Fix: write spr064 on the unprotected path via 0x0B86 (a redundant
-            # bit-clear there; protected frames skip it). Diagnostics proved the
-            # body is genuinely not DMA'd ([0x838]+128 changed nothing) and that
-            # spr260=7 is not the trigger -- this is the first patch to set spr064.
-            # UCODE_SPR064_VARIANT selects A (default)/B/C source-pointer forms.
+            # DECISIVE EFFICACY TEST (not a fix). Seven prior ucode patches all
+            # produced byte-identical 86-byte captures because they all sat in
+            # the 0A73-0B95 TX-template/ACK-response band, NOT the host RX->host
+            # DMA path. The real RX-to-host descriptor is built at 0x01C3 (reached
+            # every frame via 0x03CE), byte count = spr223 set at 01C8/01CA. This
+            # forces spr223=0x40 (64) on that UNIVERSAL path so the effect cannot
+            # be off-path. Read captured frame lengths: all frames <=64 => ucode
+            # patching WORKS and spr223 governs; protected<=64 but EAPOL still 86
+            # => works but EAPOL bounded by a separate RXE/ARM lookahead; nothing
+            # changes => ucode patches are not taking effect (debug deployment).
             # IMPORTANT: the top-level `make` already extracted ucode.bin, so we
             # must patch that EXTRACTED file (what the patch build uses) and make
             # it newest so it is not re-extracted; also patch the firmware image.
-            export UCODE_SPR064_VARIANT="${UCODE_SPR064_VARIANT:-A}"
             FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
-            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-spr064-fix.sh" "$FWDIR/fw_bcmdhd.bin"
+            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-dmalen-test.sh" "$FWDIR/fw_bcmdhd.bin"
             if [ -f "$FWDIR/ucode.bin" ]; then
-              bash "$NXP/bcm4358-ucode-spr064-fix.sh" "$FWDIR/ucode.bin"
+              bash "$NXP/bcm4358-ucode-dmalen-test.sh" "$FWDIR/ucode.bin"
               touch "$FWDIR/ucode.bin"
             fi
             # (ARM measurement DISABLED for the clean ucode test)
@@ -248,14 +246,14 @@ jobs:
             bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-wps-assert-defuse.sh" "$FW"
           fi
 
-          # GUARD: assert the d11 ucode spr064 body-pull FIX is embedded in the
+          # GUARD: assert the d11 ucode DMALEN efficacy test is embedded in the
           # FINAL firmware (run AFTER all binary patches so the printed md5 is
           # exactly what gets bundled + flashed -- i.e. matches the on-device
           # `md5sum /vendor/firmware/fw_bcmdhd.bin`). Delegated to a script so no
           # inline Python lives in this YAML.
           if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
              [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
-            bash "$NXP/verify-ucode-spr064.sh" "$FW"
+            bash "$NXP/verify-ucode-dmalen.sh" "$FW"
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/anykernel/firmware"
