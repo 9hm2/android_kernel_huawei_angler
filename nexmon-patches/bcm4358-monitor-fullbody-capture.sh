@@ -65,6 +65,7 @@ diag_fill(unsigned char *buf, unsigned short cnt,
           unsigned char *rxhdr, unsigned char *frame, unsigned int plen)
 {
     unsigned int i;
+    for (i = 36; i < 256; i++) buf[i] = 0;       // clear stale frame bytes
     buf[0] = cnt; buf[1] = cnt >> 8;
     buf[2] = plen; buf[3] = plen >> 8;
     for (i = 0; i < 32; i++) buf[4 + i] = rxhdr[i];
@@ -74,15 +75,18 @@ diag_fill(unsigned char *buf, unsigned short cnt,
 void
 wlc_recvdata_fullbody_monitor(struct wlc_info *wlc, unsigned char *rxhdr, struct sk_buff *p)
 {
-    unsigned char *frame = (unsigned char *)p->data;   // CONFIRMED: offset 0
+    unsigned char *frame = (unsigned char *)p->data;   // CONFIRMED: offset 0 (real 802.11 at +6)
     unsigned int plen = p->len;
     unsigned int i;
     int is_eapol = 0;
-    int is_data  = ((frame[0] & 0x0c) == 0x08);        // FC type == data
+    int is_data  = ((frame[0] & 0x0c) == 0x08);        // FC type == data (note: +6 prefix present)
 
-    // identify EAPOL by the LLC/SNAP ethertype 0x888e in the first ~40 bytes
-    for (i = 0; i + 1 < 40 && i + 1 < plen; i++)
-        if (frame[i] == 0x88 && frame[i + 1] == 0x8e) { is_eapol = 1; break; }
+    // identify EAPOL by the FULL LLC/SNAP signature aa-aa-03-00-00-00-88-8e
+    // (matching only 88 8e false-positives on MAC addresses ending in 88:8e)
+    for (i = 0; i + 7 < 56 && i + 7 < plen; i++)
+        if (frame[i] == 0xaa && frame[i+1] == 0xaa && frame[i+2] == 0x03 &&
+            frame[i+3] == 0x00 && frame[i+4] == 0x00 && frame[i+5] == 0x00 &&
+            frame[i+6] == 0x88 && frame[i+7] == 0x8e) { is_eapol = 1; break; }
 
     if (is_eapol) {
         if (g_diagA_n < 0xffff) g_diagA_n++;
