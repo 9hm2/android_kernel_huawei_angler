@@ -192,21 +192,21 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
-            # DEFINITIVE UCODE-EFFICACY PROBE (throwaway -- expect Wi-Fi to break
-            # if the ucode loads). Eight RX-path ucode patches + a spr223=64 cap
-            # at the "universal" RX-DMA descriptor all produced ZERO on-device
-            # change (frames still up to ~891 B). This hangs the PSM at init by
-            # turning 0x0001 (jext 0x7F ->0FF7) into a self-loop. If Wi-Fi then
-            # FAILS to init -> the patched ucode IS loaded (truncation is just at
-            # an untried site); if Wi-Fi works fine -> the ucode is NOT loaded,
-            # so stop patching ucode and fix the decompress-into-IMEM deployment.
-            # IMPORTANT: the top-level `make` already extracted ucode.bin, so we
-            # must patch that EXTRACTED file (what the patch build uses) and make
-            # it newest so it is not re-extracted; also patch the firmware image.
+            # NON-DESTRUCTIVE ucode-efficacy verification. Inject a read-back
+            # ioctl (cmd 0x600) that reads the LIVE d11 UCM, and apply the
+            # detectable spr223=64 ucode patch (confirmed non-destructive: Wi-Fi
+            # worked, frames up to 891 B). On device, `ucmread wlan0 0xE40 8`
+            # returns 2312000361b00000 if the patched ucode is live, or
+            # 2392004748e80000 if it never reached the d11 (deployment bug).
+            # Anchor: `ucmread wlan0 0x000 8` must read 4e10000360bc0100.
+            [ -f "$PATCHDIR/src/ioctl.c" ] && \
+              bash "$NXP/bcm4358-add-ucmread-ioctl.sh" "$PATCHDIR/src/ioctl.c"
             FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
-            # (ucode patching paused -- investigating whether patches reach the
-            # live d11 at all; ship STOCK ucode = working monitor firmware.)
-            : "no ucode patch"
+            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-dmalen-test.sh" "$FWDIR/fw_bcmdhd.bin"
+            if [ -f "$FWDIR/ucode.bin" ]; then
+              bash "$NXP/bcm4358-ucode-dmalen-test.sh" "$FWDIR/ucode.bin"
+              touch "$FWDIR/ucode.bin"
+            fi
             # (ARM measurement DISABLED for the clean ucode test)
             #[ -f "$PATCHDIR/src/monitormode.c" ] && \
             #  bash "$NXP/bcm4358-monitor-eapol-snoopcap.sh" "$PATCHDIR/src/monitormode.c"
@@ -249,7 +249,7 @@ jobs:
           # inline Python lives in this YAML.
           if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
              [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
-            : "ucode guard paused"
+            bash "$NXP/verify-ucode-dmalen.sh" "$FW"
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/anykernel/firmware"
@@ -360,6 +360,10 @@ jobs:
             echo "staged standalone fw_bcmdhd.bin (md5 $FW_MD5)"
           fi
 
+          # Stage the UCM read-back userspace source as a release asset (compile
+          # on-device: gcc -O2 -o ucmread ucmread.c) for ucode-efficacy verify.
+          cp "$GITHUB_WORKSPACE/nexmon-patches/ucmread.c" "$GITHUB_WORKSPACE/ucmread.c" || true
+
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
@@ -417,5 +421,6 @@ jobs:
             ${{ env.ZIP_NAME }}
             fw_bcmdhd.bin
             fw_bcmdhd.bin.md5
+            ucmread.c
             hwdb.bin
           fail_on_unmatched_files: false
