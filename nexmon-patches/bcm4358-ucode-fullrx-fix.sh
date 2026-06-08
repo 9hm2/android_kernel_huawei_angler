@@ -56,13 +56,10 @@ base = 0 if len(d) < 0x20000 else UCODE_BASE_IN_FW
 # (instr_index, old_hex, new_hex, label)
 patches = [
     (0x0B86, "41280801e0810100", "315400ab5e680000", "0B86 -> je r42,0x2 ->1431 (DATA-only gate)"),
-    (0x1431, "8017009705b00000", "4128080560880100", "1431 set [0x841] bit0=1 (kick will stream)"),
+    (0x1431, "8017009705b00000", "4128080d60900100", "1431 set [0x841] bits[1:0]=3 (like protected 0AB1)"),
     (0x1432, "53342c005e680000", "6212008b47b00000", "1432 spr262=spr1e2 (no IV skip)"),
     (0x1433, "1211000360bc0100", "6bc8016b5ee00000", "1433 [0x86B]=r26+0xE (full length)"),
-    (0x1434, "1511000360bc0100", "61524cae21e80000", "1434 spr261=[0x86B]-spr262 (body length)"),
-    (0x1435, "6410009b05b00000", "60f2000360bc0100", "1435 spr260=0x7 (arm body copy; bit0 still 1)"),
-    (0x1436, "3e14002345000200", "4128080160880100", "1436 clear [0x841] bit0=0 (host sees non-AMSDU)"),
-    (0x1437, "8117001f45b00000", "870b000080bf0300", "1437 jext 0x7F ->0B87 (resume)"),
+    (0x1434, "1511000360bc0100", "870b000080bf0300", "1434 jext 0x7F ->0B87 (kick via 0B95-0B98)"),
 ]
 # anchor sanity: ucode[0] must be the known first instruction
 if bytes(d[base:base+8]) != bytes.fromhex("4e10000360bc0100"):

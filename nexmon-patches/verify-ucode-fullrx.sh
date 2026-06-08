@@ -15,13 +15,10 @@ if i < 0:
 uc = zlib.decompress(d[i:])
 want = {
     0x5c30: "315400ab5e680000",   # 0B86 je r42,0x2 ->1431 (DATA gate)
-    0xa188: "4128080560880100",   # 1431 set [0x841] bit0=1
+    0xa188: "4128080d60900100",   # 1431 [0x841] bits[1:0]=3 (like protected)
     0xa190: "6212008b47b00000",   # 1432 spr262=spr1e2 (no IV)
     0xa198: "6bc8016b5ee00000",   # 1433 [0x86B]=r26+0xE
-    0xa1a0: "61524cae21e80000",   # 1434 spr261=[0x86B]-spr262
-    0xa1a8: "60f2000360bc0100",   # 1435 spr260=0x7 (arm copy)
-    0xa1b0: "4128080160880100",   # 1436 clear [0x841] bit0=0
-    0xa1b8: "870b000080bf0300",   # 1437 jext ->0B87
+    0xa1a0: "870b000080bf0300",   # 1434 jext ->0B87
 }
 print("ucode-guard: blob@0x%x len 0x%x" % (i, len(uc)))
 print("ucode-guard: built fw md5 =", hashlib.md5(d).hexdigest())
