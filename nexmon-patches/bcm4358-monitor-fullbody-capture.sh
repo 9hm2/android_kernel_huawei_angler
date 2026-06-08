@@ -59,7 +59,7 @@ static volatile unsigned short g_diagB_n = 0;
 static volatile unsigned short g_diagB_maxlen = 0;
 static unsigned char g_eapol_diag[256]  = { 0 };   // bucket A: EAPOL
 static unsigned char g_eapol_diag2[256] = { 0 };   // bucket B: largest DATA
-static unsigned char g_eapol_shm[256]   = { 0 };   // SHM snapshot at the EAPOL moment
+static unsigned char g_eapol_shm[1024]  = { 0 };   // d11 RX-buffer SRAM dump (0xC00..0xFFF)
 
 // read live d11 SHM (objmem select 0x10000) -- the proven path; lets us correlate
 // the EAPOL frame with the ucode 0B95 stamps captured at the SAME instant.
@@ -95,20 +95,14 @@ wlc_recvdata_fullbody_monitor(struct wlc_info *wlc, unsigned char *rxhdr, struct
 
     if (is_eapol) {
         void *wlc_hw = wlc->hw;
-        unsigned int spr1e2;
         if (g_diagA_n < 0xffff) g_diagA_n++;
         diag_fill(g_eapol_diag, g_diagA_n, rxhdr, frame, plen);
-        // correlated d11 SRAM (objmem sel 0x10000) snapshot AT the EAPOL moment:
-        //   [0..63]   = the 1032 instrument stamps (SRAM byte 0x400..0x43F);
-        //               the stamped spr1e2 is at [0x208] = byte 0x410 = shm[16..17]
-        //   [64..255] = the FULL frame at objmem(0x10000, spr1e2 + k), k=0..191
-        //               -- if bytes past ~96 are the real EAPOL tail (non-zero MIC),
-        //               the ARM tail re-pull is confirmed.
-        for (i = 0; i < 64; i++)
-            g_eapol_shm[i] = wlc_bmac_read_objmem_byte(wlc_hw, 0x400 + i, 0x10000);
-        spr1e2 = g_eapol_shm[16] | (g_eapol_shm[17] << 8);
-        for (i = 0; i < 192; i++)
-            g_eapol_shm[64 + i] = wlc_bmac_read_objmem_byte(wlc_hw, spr1e2 + i, 0x10000);
+        // On-device scan found received frames stored FULL (incl body/MIC) in d11
+        // SRAM at objmem(0x10000) ~0xC00..0xFFF. Dump that whole RX-buffer region
+        // AT the EAPOL moment so we can find this EAPOL with its complete tail
+        // (the WPA2 Key MIC). Read back chunked via cmd 0x606 (offset-aware).
+        for (i = 0; i < 1024; i++)
+            g_eapol_shm[i] = wlc_bmac_read_objmem_byte(wlc_hw, 0xC00 + i, 0x10000);
     }
 
     // bucket B: keep the LARGEST data frame seen (a full-delivery sample to diff)
