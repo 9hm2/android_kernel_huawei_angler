@@ -59,6 +59,11 @@ static volatile unsigned short g_diagB_n = 0;
 static volatile unsigned short g_diagB_maxlen = 0;
 static unsigned char g_eapol_diag[256]  = { 0 };   // bucket A: EAPOL
 static unsigned char g_eapol_diag2[256] = { 0 };   // bucket B: largest DATA
+static unsigned char g_eapol_shm[256]   = { 0 };   // SHM snapshot at the EAPOL moment
+
+// read live d11 SHM (objmem select 0x10000) -- the proven path; lets us correlate
+// the EAPOL frame with the ucode 0B95 stamps captured at the SAME instant.
+extern unsigned char wlc_bmac_read_objmem_byte(void *wlc_hw, unsigned int off, int sel);
 
 static void
 diag_fill(unsigned char *buf, unsigned short cnt,
@@ -89,8 +94,16 @@ wlc_recvdata_fullbody_monitor(struct wlc_info *wlc, unsigned char *rxhdr, struct
             frame[i+6] == 0x88 && frame[i+7] == 0x8e) { is_eapol = 1; break; }
 
     if (is_eapol) {
+        void *wlc_hw = wlc->hw;
         if (g_diagA_n < 0xffff) g_diagA_n++;
         diag_fill(g_eapol_diag, g_diagA_n, rxhdr, frame, plen);
+        // correlated d11 SHM snapshot AT the EAPOL moment:
+        //   [0..63]   = the 0B95 instrument stamps + neighbours (SHM byte 0x400..0x43F)
+        //   [64..159] = the live d11 rxhdr region (SHM word [0x838]=byte 0x1070 .. 0x10CF)
+        for (i = 0; i < 64; i++)
+            g_eapol_shm[i] = wlc_bmac_read_objmem_byte(wlc_hw, 0x400 + i, 0x10000);
+        for (i = 0; i < 96; i++)
+            g_eapol_shm[64 + i] = wlc_bmac_read_objmem_byte(wlc_hw, 0x1070 + i, 0x10000);
     }
 
     // bucket B: keep the LARGEST data frame seen (a full-delivery sample to diff)
@@ -103,6 +116,7 @@ wlc_recvdata_fullbody_monitor(struct wlc_info *wlc, unsigned char *rxhdr, struct
 
 unsigned char *nexmon_eapol_diag_ptr(void)  { return g_eapol_diag; }
 unsigned char *nexmon_eapol_diag2_ptr(void) { return g_eapol_diag2; }
+unsigned char *nexmon_eapol_shm_ptr(void)   { return g_eapol_shm; }
 
 __attribute__((naked)) void
 wlc_recvdata_fullbody_monitor_trampoline(void)
