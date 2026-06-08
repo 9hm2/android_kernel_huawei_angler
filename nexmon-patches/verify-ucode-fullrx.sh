@@ -14,11 +14,8 @@ if i < 0:
     sys.exit("::error::ucode-guard: no compressed ucode blob found in built fw")
 uc = zlib.decompress(d[i:])
 want = {
-    0x5c30: "315400ab5e680000",   # 0B86 je r42,0x2 ->1431 (DATA gate)
-    0xa188: "4128080d60900100",   # 1431 [0x841] bits[1:0]=3 (like protected)
-    0xa190: "6212008b47b00000",   # 1432 spr262=spr1e2 (no IV)
-    0xa198: "6bc8016b5ee00000",   # 1433 [0x86B]=r26+0xE
-    0xa1a0: "870b000080bf0300",   # 1434 jext ->0B87
+    0x5ca8: "960b000721000200",   # 0B95 kick gate -> 0B96 (always run)
+    0x5cb0: "61524c6a5ee80000",   # 0B96 spr261 = r26 - spr262
 }
 print("ucode-guard: blob@0x%x len 0x%x" % (i, len(uc)))
 print("ucode-guard: built fw md5 =", hashlib.md5(d).hexdigest())
