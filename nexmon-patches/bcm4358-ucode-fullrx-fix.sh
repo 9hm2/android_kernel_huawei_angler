@@ -55,8 +55,10 @@ UCODE_BASE_IN_FW = 0x8c9c0
 base = 0 if len(d) < 0x20000 else UCODE_BASE_IN_FW
 # (instr_index, old_hex, new_hex, label)
 patches = [
-    (0x0B95, "990b000721000200", "960b000721000200", "0B95 kick gate retarget ->0B99 => ->0B96 (kick always runs)"),
-    (0x0B96, "61524cae21e80000", "61524c6a5ee80000", "0B96 spr261 = r26 - spr262 (true full length, not stale [0x86B])"),
+    (0x0A9B, "9faa034fde680000", "9caa034fde680000", "0A9B jne r19,0x1D retarget ->0A9F => ->0A9C"),
+    (0x0A9C, "9317006749290100", "9f0a0013c9830200", "0A9C jnzx 0,7,spr244 ->0A9F (protected: skip the raise)"),
+    (0x0A9D, "9faa064f5e680000", "6112008f47b00000", "0A9D spr261(DAGG_BYTESLEFT)=spr1e3 (full frame length)"),
+    (0x0A9E, "9337004f5ea90100", "6212000360b00000", "0A9E spr262(DAGG_SH_OFFSET)=0 (no crypto offset)"),
 ]
 # anchor sanity: ucode[0] must be the known first instruction
 if bytes(d[base:base+8]) != bytes.fromhex("4e10000360bc0100"):
