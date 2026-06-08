@@ -2,31 +2,31 @@
 # Patch the BCM4358 d11 PSM ucode so monitor mode delivers UNPROTECTED frames
 # (the EAPOL handshake) at FULL length, not truncated at ~86 bytes.
 #
-# Root cause (RE'd from the arch-15 disassembly and EXECUTION-VALIDATED in the
-# d11-emu interpreter): on RX the rate-dispatch (ucode 0x0A5A-0x0A72) computes the
-# full on-air length from the PLCP/L-SIG into r26. Then at
-#   0x0A7E:  srx 13,0,spr02b,0x0,r26    ; r26 = RcvLFIFOStatus[13:0]
-# the ucode OVERWRITES r26 with the receive/decrypt-FIFO byte count. For an
-# unprotected frame the decrypt is aborted at the EAPOL-Key nonce, so the FIFO
-# reports only ~86 bytes; 0x0A7E adopts that as the frame length, which flows to
-# WEP_PSDULEN -> [0x86B] -> DAGG_BYTESLEFT (the host copy count) -> the ~86-byte
-# monitor frame. Encrypted frames stream whole, so the FIFO reports full length.
+# Mechanism (RE'd from the arch-15 disassembly; the full frame IS in the RX FIFO
+# -- RxFrameSize is full for both paths -- so this is a software copy decision):
+# the cipher-key test at 0x0AAE gates BOTH the full-length store and the bulk
+# payload copy:
+#   0AAE: jzx 0,7,spr244 -> 0AB5   ; spr244 bit7 = cipher key present
+#         plaintext (no key) jumps to 0AB5, SKIPPING:
+#           0AB1 ([0x841]bit0 = decrypt/full-copy flag)
+#           0AB3 ([0x86B] = r26+14 = FULL frame length)
+#   0B95: jzx 0,0,[0x841] -> 0B99  ; with bit0=0 (plaintext) jumps over the bulk
+#         DAGG kick 0B96-0B98 (spr261=[0x86B]-spr262, spr260=7 = full payload copy)
+# Net: plaintext runs only the ~86B header DAGG; the full-length store and the
+# bulk-payload copy are both branched around -> header-through-nonce truncation.
+# (This is why prior length/timing patches at 0A7E/copy-loop did nothing: plaintext
+# never executes the length-store or bulk-copy kick at all.)
 #
-# (An earlier theory that SHM [0x840][5:10] was the copy length was WRONG: that
-# field is RXS_SECKINDX, the security key index -- patching it did nothing.)
+# Fix: route plaintext into the encrypted FULL-COPY path WITHOUT starting decrypt,
+# via two 1-byte branch-target redirects:
+#   0AAE: ...->0AB5  =>  ...->0AB2   (run 0AB2/0AB3/0AB4: set [0x86B] full, skip
+#                                     0AB1 so no decrypt engine is started)
+#   0B95: ...->0B99  =>  ...->0B96   (run 0B96/0B97/0B98: bulk DAGG full copy)
+# Encrypted path is byte-identical (both edits only move plaintext-taken edges).
+# 2 bytes total, reversible. Covers legacy/OFDM EAPOL rates.
 #
-# Fix: neutralize the 0x0A7E overwrite so the full PLCP-derived length survives:
-#   srx 13,0,spr02b,0x0,r26   ->   or r26,0x0,r26   (no-op)
-#   old 8 bytes: 9a 17 00 af 40 68 01 00
-#   new 8 bytes: 9a 17 00 6b 5e b0 00 00
-# d11-emu execution proof (same on-air frame, FIFO reports 1490 enc / 86 unprot):
-#   original : enc 1490, unprot 86   (bug)
-#   patched  : enc 1490, unprot 1490 (fixed; encrypted path byte-identical)
-# EAPOL 4-way frames are sent at legacy/OFDM basic rates, which this covers.
-#
-# The 8-byte signature is unique in both the extracted ucode (idx 0x0A7E ->
-# 0x53F0) and the firmware image (0x8c9c0 + 0x53F0 = 0x91DB0), so we
-# search-and-replace wherever it occurs.
+# The 8-byte signatures are unique in both the extracted ucode (idx*8) and the
+# firmware image (0x8c9c0 + idx*8), so we search-and-replace wherever they occur.
 #
 # Usage: bcm4358-ucode-eapol-fulllen.sh <ucode.bin | fw_bcmdhd.bin>
 set -euo pipefail
@@ -38,20 +38,24 @@ python3 - "$F" <<'PY'
 import sys
 path = sys.argv[1]
 d = bytearray(open(path, 'rb').read())
-old = bytes.fromhex("9a1700af40680100")   # srx 13,0,spr02b,0x0,r26
-new = bytes.fromhex("9a17006b5eb00000")   # or  r26,0x0,r26  (no-op)
-n_old = d.count(old)
-n_new = d.count(new)
-if n_new >= 1 and n_old == 0:
-    print("ucode-eapol: %s already patched (%d sites)" % (path, n_new)); sys.exit(0)
-if n_old != 1:
-    sys.stderr.write("ucode-eapol: expected exactly 1 unpatched site in %s, found "
-                     "%d (and %d patched) -- aborting\n" % (path, n_old, n_new))
-    sys.exit(1)
-off = d.find(old)
-d[off:off+8] = new
-open(path, 'wb').write(d)
-print("ucode-eapol: patched %s @0x%x  %s -> %s  (d11 idx 0x0A7E: drop the "
-      "FIFO-length overwrite so the full PLCP length survives for unprotected RX)"
-      % (path, off, old.hex(), new.hex()))
+# (old, new, label) -- each redirects a plaintext-only branch into the full-copy path
+patches = [
+    ("b50a0013c9030200", "b20a0013c9030200", "0AAE jzx spr244 ->0AB5=>0AB2 (full-len store)"),
+    ("990b000721000200", "960b000721000200", "0B95 jzx [0x841] ->0B99=>0B96 (bulk DAGG copy)"),
+]
+done = 0
+for old_h, new_h, label in patches:
+    old = bytes.fromhex(old_h); new = bytes.fromhex(new_h)
+    n_old, n_new = d.count(old), d.count(new)
+    if n_new >= 1 and n_old == 0:
+        print("ucode-eapol: %s already patched [%s]" % (path, label)); done += 1; continue
+    if n_old != 1:
+        sys.stderr.write("ucode-eapol: expected exactly 1 site for %s in %s, found "
+                         "%d (and %d patched) -- aborting\n" % (label, path, n_old, n_new))
+        sys.exit(1)
+    off = d.find(old); d[off:off+8] = new
+    print("ucode-eapol: patched %s @0x%x  %s -> %s  [%s]"
+          % (path, off, old_h, new_h, label)); done += 1
+if done == len(patches):
+    open(path, 'wb').write(d)
 PY
