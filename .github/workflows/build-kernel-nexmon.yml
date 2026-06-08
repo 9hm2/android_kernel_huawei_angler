@@ -194,11 +194,17 @@ jobs:
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
             # Full passive EAPOL: the truncation is in the d11 ucode (it DMAs
             # only ~86 bytes of unprotected/EAPOL RX frames; encrypted frames pass
-            # whole). Reverse-engineered the ucode (arch 15) and patch the RX
-            # decrypt routine so the plaintext path takes the full-length copy.
-            # This is the real fix; the ARM snoopcap measurement is disabled.
-            FW_RAM="$(find firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }} -maxdepth 1 -name 'fw_bcmdhd.bin' 2>/dev/null | head -n1)"
-            [ -n "$FW_RAM" ] && bash "$NXP/bcm4358-ucode-eapol-fulllen.sh" "$FW_RAM"
+            # whole). RE'd the ucode (arch 15) + emulator-validated the fix (max
+            # the [0x840] DMA copy-length on the plaintext RX path, idx 0x0B86).
+            # IMPORTANT: the top-level `make` already extracted ucode.bin, so we
+            # must patch that EXTRACTED file (what the patch build uses) and make
+            # it newest so it is not re-extracted; also patch the firmware image.
+            FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
+            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-eapol-fulllen.sh" "$FWDIR/fw_bcmdhd.bin"
+            if [ -f "$FWDIR/ucode.bin" ]; then
+              bash "$NXP/bcm4358-ucode-eapol-fulllen.sh" "$FWDIR/ucode.bin"
+              touch "$FWDIR/ucode.bin"
+            fi
             # (ARM measurement DISABLED for the clean ucode test)
             #[ -f "$PATCHDIR/src/monitormode.c" ] && \
             #  bash "$NXP/bcm4358-monitor-eapol-snoopcap.sh" "$PATCHDIR/src/monitormode.c"
