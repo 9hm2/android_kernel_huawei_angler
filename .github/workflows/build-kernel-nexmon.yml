@@ -192,23 +192,21 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
-            # DECISIVE EFFICACY TEST (not a fix). Seven prior ucode patches all
-            # produced byte-identical 86-byte captures because they all sat in
-            # the 0A73-0B95 TX-template/ACK-response band, NOT the host RX->host
-            # DMA path. The real RX-to-host descriptor is built at 0x01C3 (reached
-            # every frame via 0x03CE), byte count = spr223 set at 01C8/01CA. This
-            # forces spr223=0x40 (64) on that UNIVERSAL path so the effect cannot
-            # be off-path. Read captured frame lengths: all frames <=64 => ucode
-            # patching WORKS and spr223 governs; protected<=64 but EAPOL still 86
-            # => works but EAPOL bounded by a separate RXE/ARM lookahead; nothing
-            # changes => ucode patches are not taking effect (debug deployment).
+            # DEFINITIVE UCODE-EFFICACY PROBE (throwaway -- expect Wi-Fi to break
+            # if the ucode loads). Eight RX-path ucode patches + a spr223=64 cap
+            # at the "universal" RX-DMA descriptor all produced ZERO on-device
+            # change (frames still up to ~891 B). This hangs the PSM at init by
+            # turning 0x0001 (jext 0x7F ->0FF7) into a self-loop. If Wi-Fi then
+            # FAILS to init -> the patched ucode IS loaded (truncation is just at
+            # an untried site); if Wi-Fi works fine -> the ucode is NOT loaded,
+            # so stop patching ucode and fix the decompress-into-IMEM deployment.
             # IMPORTANT: the top-level `make` already extracted ucode.bin, so we
             # must patch that EXTRACTED file (what the patch build uses) and make
             # it newest so it is not re-extracted; also patch the firmware image.
             FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
-            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-dmalen-test.sh" "$FWDIR/fw_bcmdhd.bin"
+            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-hang-probe.sh" "$FWDIR/fw_bcmdhd.bin"
             if [ -f "$FWDIR/ucode.bin" ]; then
-              bash "$NXP/bcm4358-ucode-dmalen-test.sh" "$FWDIR/ucode.bin"
+              bash "$NXP/bcm4358-ucode-hang-probe.sh" "$FWDIR/ucode.bin"
               touch "$FWDIR/ucode.bin"
             fi
             # (ARM measurement DISABLED for the clean ucode test)
@@ -246,14 +244,14 @@ jobs:
             bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-wps-assert-defuse.sh" "$FW"
           fi
 
-          # GUARD: assert the d11 ucode DMALEN efficacy test is embedded in the
+          # GUARD: assert the d11 ucode init self-loop PROBE is embedded in the
           # FINAL firmware (run AFTER all binary patches so the printed md5 is
           # exactly what gets bundled + flashed -- i.e. matches the on-device
           # `md5sum /vendor/firmware/fw_bcmdhd.bin`). Delegated to a script so no
           # inline Python lives in this YAML.
           if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
              [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
-            bash "$NXP/verify-ucode-dmalen.sh" "$FW"
+            bash "$NXP/verify-ucode-hang.sh" "$FW"
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/anykernel/firmware"
