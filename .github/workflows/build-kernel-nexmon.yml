@@ -194,15 +194,20 @@ jobs:
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
             # Full passive EAPOL: the truncation is in the d11 ucode (it DMAs
             # only ~86 bytes of unprotected/EAPOL RX frames; encrypted frames pass
-            # whole). RE'd the ucode (arch 15) + emulator-validated the fix (max
-            # the [0x840] DMA copy-length on the plaintext RX path, idx 0x0B86).
+            # whole). The prior cipher-key-gate patch (0AAE/0B95) was confirmed
+            # running on-device (md5 match) yet left the capture at exactly 86 B,
+            # proving the spr260=7 DAGG kick is NOT the FIFO body-pull engine.
+            # THIS BUILD ships the DIAGNOSTIC instead: a single-instruction edit at
+            # 0x0D06 that adds +128 to RxFrameSize for unprotected frames, to learn
+            # whether the body is already in host RAM (under-reported -> trivial
+            # fix) or genuinely never pulled (-> must trigger the copy engine).
             # IMPORTANT: the top-level `make` already extracted ucode.bin, so we
             # must patch that EXTRACTED file (what the patch build uses) and make
             # it newest so it is not re-extracted; also patch the firmware image.
             FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
-            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-eapol-fulllen.sh" "$FWDIR/fw_bcmdhd.bin"
+            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-rxlen-diag.sh" "$FWDIR/fw_bcmdhd.bin"
             if [ -f "$FWDIR/ucode.bin" ]; then
-              bash "$NXP/bcm4358-ucode-eapol-fulllen.sh" "$FWDIR/ucode.bin"
+              bash "$NXP/bcm4358-ucode-rxlen-diag.sh" "$FWDIR/ucode.bin"
               touch "$FWDIR/ucode.bin"
             fi
             # (ARM measurement DISABLED for the clean ucode test)
@@ -230,10 +235,11 @@ jobs:
             exit 1
           fi
 
-          # GUARD: assert the d11 ucode EAPOL-fulllen patch is actually embedded
-          # in the BUILT firmware (decompress the re-compressed ucode blob and
-          # check the two patched instruction words). Catches stale artifacts /
-          # a compression step that silently dropped the patch. bcm4358/300_14.
+          # GUARD: assert the d11 ucode RXLEN-DIAG patch is actually embedded in
+          # the BUILT firmware (decompress the re-compressed ucode blob and check
+          # the patched instruction word at 0x6830 = idx 0x0D06). Catches stale
+          # artifacts / a compression step that silently dropped the patch, and
+          # prints the built fw md5 so on-device md5sum can confirm what's flashed.
           if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
              [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
             python3 - "$FW" <<'PYEOF'
@@ -243,14 +249,13 @@ i = d.find(b'\x78\x9c', 0x8d000)            # nexmon-recompressed ucode blob
 if i < 0:
     sys.exit("::error::ucode-guard: no compressed ucode blob found in built fw")
 uc = zlib.decompress(d[i:])
-ok = uc[0x5570:0x5578] == bytes.fromhex("b20a0013c9030200") and \
-     uc[0x5ca8:0x5cb0] == bytes.fromhex("960b000721000200")
-print("ucode-guard: blob@0x%x len 0x%x; 0x5570=%s 0x5ca8=%s" %
-      (i, len(uc), uc[0x5570:0x5578].hex(), uc[0x5ca8:0x5cb0].hex()))
+ok = uc[0x6830:0x6838] == bytes.fromhex("a117103340e00000")   # 0D06 add spr00c,0x80,r33
+print("ucode-guard: blob@0x%x len 0x%x; 0x6830=%s" %
+      (i, len(uc), uc[0x6830:0x6838].hex()))
 print("ucode-guard: built fw md5 =", hashlib.md5(d).hexdigest())
 if not ok:
-    sys.exit("::error::ucode-guard: EAPOL-fulllen patch NOT present in built ucode")
-print("ucode-guard: EAPOL-fulllen ucode patch confirmed embedded.")
+    sys.exit("::error::ucode-guard: RXLEN-DIAG patch NOT present in built ucode")
+print("ucode-guard: RXLEN-DIAG ucode patch confirmed embedded.")
 PYEOF
           fi
 
