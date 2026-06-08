@@ -34,7 +34,7 @@ INSTR = {  # measurement build v2 (0B95 retargeted; stamps to host-readable [0x2
 }
 FIX = {    # delivery build v2 (0AAE+0B95 retargeted; live spr00c, bit7 gate bypass)
     off(0x0AAE): "31140013c9030200",
-    off(0x1431): "6212003340b00000",
+    off(0x1431): "6212008b47e00000",
     off(0x1432): "6b08006b5ee00000",
     off(0x1433): "41280805e0830100",
     off(0x1434): "b50af0025e680000",

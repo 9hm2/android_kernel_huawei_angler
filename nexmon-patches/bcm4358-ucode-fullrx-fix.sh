@@ -12,9 +12,11 @@
 #    is missing).
 #
 # This fix (confirmed against the binary, NOT the emulator):
-#  - Uses the LIVE spr00c (RXE_RXCNT = bytes the cmd=1 lookahead already copied) as
-#    the cmd=7 source offset, so cmd=7 appends ONLY the remainder (self-adjusting,
-#    no duplication). By 0AAE the lookahead has completed (0AA1 spins on spr271).
+#  - Uses spr262 = spr1e2 (MAC-header offset) as the cmd=7 source -- the IV-free
+#    analog of the working protected path (which uses spr1e2+0x10). On-device,
+#    spr262 = spr00c gave spr261 = framelen - spr00c ~ 0 (the 0B97 guard skipped the
+#    kick: spr00c/RXE_RXCNT counts ~the full received frame, NOT the lookahead).
+#    spr262 = spr1e2 gives spr261 = framelen - spr1e2 (~105) so the kick fires.
 #  - Bypasses the 0B95 gate via [0x841] bit7 (a bit never read or written anywhere
 #    else in the ucode -- bit4 is written at 0CF5, so it is NOT used), so NO AMSDU
 #    bit is set and the host does not drop the frame.
@@ -51,7 +53,7 @@ base = 0 if len(d) < 0x20000 else UCODE_BASE_IN_FW
 # re-decoded with d11dasm.py (arch15).
 patches = [
     (0x0AAE, "b50a0013c9030200", "31140013c9030200", "0AAE jzx spr244 bit7 ->1431 (unprotected -> stub)"),
-    (0x1431, "8017009705b00000", "6212003340b00000", "1431 spr262 = spr00c (cmd=7 src = live lookahead end)"),
+    (0x1431, "8017009705b00000", "6212008b47e00000", "1431 spr262 = spr1e2 (machdr_off; IV-free analog of the working protected path)"),
     (0x1432, "53342c005e680000", "6b08006b5ee00000", "1432 [0x86B] = r26 (framelen)"),
     (0x1433, "1211000360bc0100", "41280805e0830100", "1433 [0x841] bit7 = 1 (free discriminator, NOT AMSDU bit0)"),
     (0x1434, "1511000360bc0100", "b50af0025e680000", "1434 je r0,r0 ->0AB5 (back to shared landing)"),
