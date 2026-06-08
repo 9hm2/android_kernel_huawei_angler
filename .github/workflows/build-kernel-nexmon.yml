@@ -204,11 +204,9 @@ jobs:
             # must patch that EXTRACTED file (what the patch build uses) and make
             # it newest so it is not re-extracted; also patch the firmware image.
             FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
-            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/bcm4358-ucode-hang-probe.sh" "$FWDIR/fw_bcmdhd.bin"
-            if [ -f "$FWDIR/ucode.bin" ]; then
-              bash "$NXP/bcm4358-ucode-hang-probe.sh" "$FWDIR/ucode.bin"
-              touch "$FWDIR/ucode.bin"
-            fi
+            # (ucode patching paused -- investigating whether patches reach the
+            # live d11 at all; ship STOCK ucode = working monitor firmware.)
+            : "no ucode patch"
             # (ARM measurement DISABLED for the clean ucode test)
             #[ -f "$PATCHDIR/src/monitormode.c" ] && \
             #  bash "$NXP/bcm4358-monitor-eapol-snoopcap.sh" "$PATCHDIR/src/monitormode.c"
@@ -251,7 +249,7 @@ jobs:
           # inline Python lives in this YAML.
           if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
              [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
-            bash "$NXP/verify-ucode-hang.sh" "$FW"
+            : "ucode guard paused"
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/anykernel/firmware"
