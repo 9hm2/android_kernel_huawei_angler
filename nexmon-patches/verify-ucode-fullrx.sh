@@ -19,18 +19,18 @@ print("ucode-guard: built fw md5 =", hashlib.md5(d).hexdigest())
 # instruction index*8 = byte offset in the ucode image
 def off(idx): return idx * 8
 
-INSTR = {  # measurement build v2 (0B95 retargeted; stamps to host-readable [0x200]+)
-    off(0x0B95): "3114f0025e680000",
-    off(0x1431): "000200976eb00000",
-    off(0x1432): "0102008b49b00000",
-    off(0x1433): "020200af21b00000",
-    off(0x1434): "03424cae21e80000",
-    off(0x1435): "0402003340b00000",
-    off(0x1436): "0502000721b00000",
-    off(0x1437): "0602004748b00000",
-    off(0x1438): "070200e320b00000",
-    off(0x1439): "990b000721000200",
-    off(0x143A): "960bf0025e680000",
+INSTR = {  # measurement build v3 (RXLEN probe: 1032 hook in 102F, stamps [0x208]+)
+    off(0x1032): "3114f0025e680000",
+    off(0x1431): "080200976eb00000",
+    off(0x1432): "0902009349b00000",
+    off(0x1433): "0a02008f49b00000",
+    off(0x1434): "0b02003340b00000",
+    off(0x1435): "0c0200e320b00000",
+    off(0x1436): "0d02000721b00000",
+    off(0x1437): "0e02008b49b00000",
+    off(0x1438): "0f02004748b00000",
+    off(0x1439): "0490000660800100",
+    off(0x143A): "3310f0025e680000",
 }
 FIX = {    # delivery build v2 (0AAE+0B95 retargeted; live spr00c, bit7 gate bypass)
     off(0x0AAE): "31140013c9030200",
@@ -46,7 +46,7 @@ FIX = {    # delivery build v2 (0AAE+0B95 retargeted; live spr00c, bit7 gate byp
 
 if uc[off(0x0AAE):off(0x0AAE)+8].hex() == FIX[off(0x0AAE)]:
     want, name = FIX, "FIX (full EAPOL delivery)"
-elif uc[off(0x0B95):off(0x0B95)+8].hex() == INSTR[off(0x0B95)]:
+elif uc[off(0x1032):off(0x1032)+8].hex() == INSTR[off(0x1032)]:
     want, name = INSTR, "INSTRUMENTATION (DAGG SHM stamp)"
 else:
     sys.exit("::error::ucode-guard: neither FIX nor INSTRUMENTATION entry retarget found")
