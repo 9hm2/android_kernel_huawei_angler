@@ -90,6 +90,11 @@ install_nexmon_firmware() {
   chmod 0644 "$dst";
   chown 0.0 "$dst" 2>/dev/null;
   ui_print "  installed -> $dst";
+  # Print the installed firmware md5 so the flash is self-verifying: this is the
+  # value `md5sum /vendor/firmware/fw_bcmdhd.bin` must show after boot. If it
+  # does not match the build you intended, you flashed the wrong zip.
+  fwmd5="$(md5sum "$dst" 2>/dev/null)";
+  ui_print "  fw md5: ${fwmd5%% *}";
 
   # logstrs.bin (if bundled) lets the dhd driver translate a dongle-trap epc
   # into a firmware function name, so injection-flood traps are diagnosable.
