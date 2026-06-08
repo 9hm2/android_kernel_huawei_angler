@@ -207,15 +207,15 @@ jobs:
             # Anchor: `ucmread wlan0 0x000 8` must read 4e10000360bc0100.
             [ -f "$PATCHDIR/src/ioctl.c" ] && \
               bash "$NXP/bcm4358-add-ucmread-ioctl.sh" "$PATCHDIR/src/ioctl.c"
-            # BUILD 1 = INSTRUMENTATION (safe measurement): stamp the live DAGG
-            # body-copy bookkeeping into spare SHM 0x890..0x896 so the protected
-            # (full) and unprotected (truncated EAPOL) paths can be MEASURED on the
-            # chip via ioctl cmd 0x603 -- replacing the unreliable offline emulator.
-            # Behaviour is byte-identical (the 0B95 gate is replicated exactly), so
-            # this cannot break Wi-Fi. Once the measurement validates the body-copy
-            # parameters, swap to bcm4358-ucode-fullrx-fix.sh (the IV-free body-copy
-            # fix that delivers the full EAPOL incl. Key MIC).
-            UCODE_PATCH="bcm4358-ucode-instrument.sh"   # build 2: bcm4358-ucode-fullrx-fix.sh
+            # BUILD 2 = THE FIX (full EAPOL delivery incl. Key MIC). On-device
+            # measurement (diag bucket A) confirmed the mechanism: unprotected
+            # EAPOL rxhdr RxFrameSize=143 (full length known) but only p->len=96
+            # delivered (MIC truncated), while protected frames deliver full. The
+            # fix fires the d11 DAGG body copy (cmd=7) on the plaintext path with
+            # IV-free bookkeeping; protected path stays byte-identical; the 0B97
+            # runt guard bounds the copy. Judge success via diag bucket A (cmd
+            # 0x601): p->len should jump to ~143 with the Key MIC present.
+            UCODE_PATCH="bcm4358-ucode-fullrx-fix.sh"   # measurement build: bcm4358-ucode-instrument.sh
             FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
             [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/$UCODE_PATCH" "$FWDIR/fw_bcmdhd.bin"
             if [ -f "$FWDIR/ucode.bin" ]; then
