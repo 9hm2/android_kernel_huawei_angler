@@ -192,6 +192,12 @@ jobs:
             # wl_monitor_radiotap(): reject runt frames (p->len - 6 underflow).
             [ -f "$PATCHDIR/src/monitormode.c" ] && \
               bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
+            # FULL-BODY capture: HookPatch wlc_recvdata @0x1a6cfc to clone the
+            # full streamed foreign-plaintext EAPOL frame to monitor BEFORE the
+            # firmware drops it (the d11 kick streams the body into the lbuf; the
+            # ARM data path drops it on the 0x310 RxStatus1 test pre-monitor).
+            [ -f "$PATCHDIR/src/monitormode.c" ] && \
+              bash "$NXP/bcm4358-monitor-fullbody-capture.sh" "$PATCHDIR/src/monitormode.c"
             # NON-DESTRUCTIVE ucode-efficacy verification. Inject a read-back
             # ioctl (cmd 0x600) that reads the LIVE d11 UCM, and apply the
             # one-byte full-RX fix (0B85 spr1e0 bit6) -- also non-destructive (protected/mgmt
