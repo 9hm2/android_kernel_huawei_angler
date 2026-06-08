@@ -230,6 +230,30 @@ jobs:
             exit 1
           fi
 
+          # GUARD: assert the d11 ucode EAPOL-fulllen patch is actually embedded
+          # in the BUILT firmware (decompress the re-compressed ucode blob and
+          # check the two patched instruction words). Catches stale artifacts /
+          # a compression step that silently dropped the patch. bcm4358/300_14.
+          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
+             [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
+            python3 - "$FW" <<'PYEOF'
+import sys, zlib, hashlib
+d = open(sys.argv[1], 'rb').read()
+i = d.find(b'\x78\x9c', 0x8d000)            # nexmon-recompressed ucode blob
+if i < 0:
+    sys.exit("::error::ucode-guard: no compressed ucode blob found in built fw")
+uc = zlib.decompress(d[i:])
+ok = uc[0x5570:0x5578] == bytes.fromhex("b20a0013c9030200") and \
+     uc[0x5ca8:0x5cb0] == bytes.fromhex("960b000721000200")
+print("ucode-guard: blob@0x%x len 0x%x; 0x5570=%s 0x5ca8=%s" %
+      (i, len(uc), uc[0x5570:0x5578].hex(), uc[0x5ca8:0x5cb0].hex()))
+print("ucode-guard: built fw md5 =", hashlib.md5(d).hexdigest())
+if not ok:
+    sys.exit("::error::ucode-guard: EAPOL-fulllen patch NOT present in built ucode")
+print("ucode-guard: EAPOL-fulllen ucode patch confirmed embedded.")
+PYEOF
+          fi
+
           # Binary (address-based) patch applied to the LINKED firmware, after
           # make: defuse the WPS state-machine panic at 0x18554a so a reaver/
           # bully attack no longer traps the dongle (epc 0x0e0e0e10). Verifies
