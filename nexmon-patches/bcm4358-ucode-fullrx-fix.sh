@@ -13,21 +13,31 @@
 # misalignment / dropped frames, and it cannot be edited in place (shared with
 # real CCMP RX).
 #
-# Clean fix (5 words; image size unchanged): gate the no-op slot 0x0B86 to DATA
-# frames and run a correct, IV-free setup in dead microcode space (0x1431-0x1434,
-# orphaned after a rets at 0x1430; no branch targets it), then rejoin at 0x0B87:
-#   0B86: orx(no-op)        -> je r42,0x2 ->1431        (DATA-only gate; mgmt/non-DATA
-#                                                        fall through to 0B87 unchanged)
-#   1431: (dead)            -> orx 1,0,0x1,[0x841],[0x841]  ; [0x841] bit0=1 (open 0B95)
-#   1432: (dead)            -> or  spr1e2,0x0,spr262        ; spr262=spr1e2 (NO +0xC IV skip)
-#   1433: (dead)            -> add r26,0xE,[0x86B]          ; [0x86B]=full length
-#   1434: (dead)            -> jext 0x7F ->0B87             ; rejoin shared path
-# spr1e0 already has bit6 (0x50) at 0B85, so no spr1e0 write is needed. The kick
-# 0B96 spr261=[0x86B]-spr262=(r26+0xE)-spr1e2 is then correct (>0xE) and the body
-# streams contiguously: LLC/SNAP aa aa 03 00 00 00 88 8e + full EAPOL.
+# THE BUG in the prior attempt: [0x841] bit0 is RXS_AMSDU_MASK. Setting it to
+# pass the 0B95 kick gate marked plaintext DATA frames as A-MSDU, so the host's
+# wlc_recvdata tried to de-aggregate a plain EAPOL frame and DROPPED it (mgmt
+# never sets AMSDU -> survived). Fix: arm the full body copy (spr260=0x7)
+# DIRECTLY without ever touching [0x841] (no AMSDU), so the frame is delivered
+# intact. spr262/[0x86B] are stale on the plaintext path (0AB2/0AB3 + the
+# 0B1F-0B81 descriptor block are skipped via 0AAE->0AB5 / 0B1E->0B85), so set
+# them explicitly with NO IV skip.
+#
+# Clean fix (6 words; image size unchanged): gate the no-op slot 0x0B86 to DATA
+# frames and run an IV-free setup that arms the body copy DIRECTLY in dead
+# microcode space (0x1431-0x1435, orphaned after a rets at 0x1430; no branch
+# targets it), then resume at 0x0B87:
+#   0B86: orx(no-op) -> je r42,0x2 ->1431   (DATA-only gate; mgmt/non-DATA fall
+#                                            through to 0B87 unchanged)
+#   1431: -> or  spr1e2,0x0,spr262          ; spr262=spr1e2 (NO +0xC IV skip)
+#   1432: -> add r26,0xE,[0x86B]            ; [0x86B]=full length
+#   1433: -> sub [0x86B],spr262,spr261      ; spr261=body length
+#   1434: -> orx 7,8,0,7,spr260             ; arm full body copy (NO AMSDU bit)
+#   1435: -> jext 0x7F ->0B87               ; resume normal DATA finalization
+# [0x841] is NEVER written, so bit0 (RXS_AMSDU) stays 0 -> host does not
+# de-aggregate -> EAPOL delivered intact. spr1e0 already has bit6 (0x50) at 0B85.
 # Protected RX: 0AAE/0AB1-0AB4/0B85 byte-identical (reaches 0B87 via 0B84,
-# skipping 0B86). Management (r42!=2): 0B86 falls through to 0B87, kick gate stays
-# closed -> byte-identical.
+# skipping 0B86). Management (r42!=2): 0B86 falls through to 0B87, no copy armed
+# -> byte-identical.
 #
 # Usage: bcm4358-ucode-fullrx-fix.sh <ucode.bin | fw_bcmdhd.bin>
 set -euo pipefail
@@ -46,10 +56,11 @@ base = 0 if len(d) < 0x20000 else UCODE_BASE_IN_FW
 # (instr_index, old_hex, new_hex, label)
 patches = [
     (0x0B86, "41280801e0810100", "315400ab5e680000", "0B86 -> je r42,0x2 ->1431 (DATA-only gate)"),
-    (0x1431, "8017009705b00000", "4128080560880100", "1431 set [0x841] bit0=1"),
-    (0x1432, "53342c005e680000", "6212008b47b00000", "1432 spr262=spr1e2 (no IV skip)"),
-    (0x1433, "1211000360bc0100", "6bc8016b5ee00000", "1433 [0x86B]=r26+0xE (full length)"),
-    (0x1434, "1511000360bc0100", "870b000080bf0300", "1434 jext 0x7F ->0B87 (rejoin)"),
+    (0x1431, "8017009705b00000", "6212008b47b00000", "1431 spr262=spr1e2 (no IV skip)"),
+    (0x1432, "53342c005e680000", "6bc8016b5ee00000", "1432 [0x86B]=r26+0xE (full length)"),
+    (0x1433, "1211000360bc0100", "61524cae21e80000", "1433 spr261=[0x86B]-spr262 (body length)"),
+    (0x1434, "1511000360bc0100", "60f2000360bc0100", "1434 spr260=0x7 (arm body copy; NO AMSDU bit)"),
+    (0x1435, "6410009b05b00000", "870b000080bf0300", "1435 jext 0x7F ->0B87 (resume)"),
 ]
 # anchor sanity: ucode[0] must be the known first instruction
 if bytes(d[base:base+8]) != bytes.fromhex("4e10000360bc0100"):
