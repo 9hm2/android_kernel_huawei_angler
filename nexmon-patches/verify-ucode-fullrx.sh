@@ -37,12 +37,17 @@ FIX = {    # delivery build v2 (0AAE+0B95 retargeted; live spr00c, bit7 gate byp
     off(0x1437): "990bf0025e680000",
 }
 
-FD = {     # force-decrypt build (0B1E TA-gated reroute into WEP-decrypt)
+FD = {     # force-decrypt build (0B1E TA-gated reroute into WEP-decrypt + algo-force)
     off(0x0B1E): "3114f0025e680000",
     off(0x1431): "a11700d749280100",
     off(0x1432): "1f0b000f52870200",
     off(0x1433): "1f0b00875e680000",
     off(0x1434): "850bf0025e680000",
+    off(0x0B60): "3514f0025e680000",
+    off(0x1435): "3714000f52870200",
+    off(0x1436): "a637000360bc0100",
+    off(0x1437): "64eb009bde680000",
+    off(0x1438): "610bf0025e680000",
 }
 
 if uc[off(0x0B1E):off(0x0B1E)+8].hex() == FD[off(0x0B1E)]:
