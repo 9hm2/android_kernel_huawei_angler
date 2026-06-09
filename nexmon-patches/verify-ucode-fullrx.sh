@@ -19,11 +19,18 @@ print("ucode-guard: built fw md5 =", hashlib.md5(d).hexdigest())
 # instruction index*8 = byte offset in the ucode image
 def off(idx): return idx * 8
 
-INSTR = {  # measurement build v4 (tail re-pull locator: stamp spr1e2 at 1032 hook)
+INSTR = {  # measurement build v5 (mgmt-vs-data spr1f5 probe; 1032 hook in 102F)
     off(0x1032): "3114f0025e680000",
-    off(0x1431): "0802008b47b00000",
-    off(0x1432): "0490000660800100",
-    off(0x1433): "3310f0025e680000",
+    off(0x1431): "080200976eb00000",
+    off(0x1432): "090200d747b00000",
+    off(0x1433): "0a02005b00b00000",
+    off(0x1434): "0b02007f5ab00000",
+    off(0x1435): "0c02008f49b00000",
+    off(0x1436): "0d0200e320b00000",
+    off(0x1437): "0e02000749b00000",
+    off(0x1438): "0f02008b47b00000",
+    off(0x1439): "0490000660800100",
+    off(0x143A): "3310f0025e680000",
 }
 FIX = {    # delivery build v2 (0AAE+0B95 retargeted; live spr00c, bit7 gate bypass)
     off(0x0AAE): "31140013c9030200",
