@@ -37,6 +37,12 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    # inputs.* are empty on a push event; fall back to the defaults so the same
+    # job works for both push and workflow_dispatch.
+    env:
+      NEXMON_REF: ${{ github.event.inputs.nexmon_ref || 'master' }}
+      NEXMON_CHIP: ${{ github.event.inputs.nexmon_chip || 'bcm4358' }}
+      NEXMON_FWVER: ${{ github.event.inputs.nexmon_fwver || '7_112_300_14_sta' }}
     steps:
       - name: Checkout repo (for nexmon-patches/)
         uses: actions/checkout@v4
@@ -64,7 +70,7 @@ jobs:
 
           git clone https://github.com/seemoo-lab/nexmon.git "$HOME/nexmon"
           cd "$HOME/nexmon"
-          git checkout "${{ github.event.inputs.nexmon_ref }}"
+          git checkout "$NEXMON_REF"
 
           # isl for the flashpatch toolchain.
           ( cd buildtools/isl-0.10 && CC=gcc ./configure && make -j"$(nproc)" && sudo make install )
@@ -75,13 +81,13 @@ jobs:
           set +eu; source ./setup_env.sh; set -eu
           make   # buildtools + libs
 
-          PATCHDIR="patches/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}/nexmon"
+          PATCHDIR="patches/$NEXMON_CHIP/$NEXMON_FWVER/nexmon"
           if [ ! -d "$PATCHDIR" ]; then
             echo "::error::nexmon patch dir not found: $PATCHDIR"; ls -R patches | head -n 80; exit 1
           fi
 
           # --- apply our bcm4358 patch set (identical to the kernel workflow) ----
-          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ]; then
+          if [ "$NEXMON_CHIP" = "bcm4358" ]; then
             NXP="$GITHUB_WORKSPACE/nexmon-patches"
             [ -f "$PATCHDIR/src/ioctl.c" ]      && bash "$NXP/bcm4358-inject-null-check.sh"     "$PATCHDIR/src/ioctl.c"
             [ -f "$PATCHDIR/src/injection.c" ]  && bash "$NXP/bcm4358-injection-len-check.sh"   "$PATCHDIR/src/injection.c"
@@ -91,11 +97,11 @@ jobs:
 
             # ucode patch: instrument (measurement) or fullrx-fix (delivery).
             UCODE_PATCH="bcm4358-ucode-instrument.sh"   # delivery build: bcm4358-ucode-fullrx-fix.sh
-            FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
+            FWDIR="firmwares/$NEXMON_CHIP/$NEXMON_FWVER"
             [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/$UCODE_PATCH" "$FWDIR/fw_bcmdhd.bin"
             if [ -f "$FWDIR/ucode.bin" ]; then bash "$NXP/$UCODE_PATCH" "$FWDIR/ucode.bin"; touch "$FWDIR/ucode.bin"; fi
 
-            if [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
+            if [ "$NEXMON_FWVER" = "7_112_300_14_sta" ]; then
               bash "$NXP/bcm4358-install-free-guard.sh" "$PATCHDIR/src" "$NXP"
             fi
           fi
@@ -111,8 +117,8 @@ jobs:
           [ -n "$FW" ] || { echo "::error::no fw_bcmdhd.bin produced"; ls -lh "$PATCHDIR"; exit 1; }
 
           # binary WPS-assert defuse + ucode guard (same as the kernel workflow).
-          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
-             [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
+          if [ "$NEXMON_CHIP" = "bcm4358" ] && \
+             [ "$NEXMON_FWVER" = "7_112_300_14_sta" ]; then
             bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-wps-assert-defuse.sh" "$FW"
             bash "$GITHUB_WORKSPACE/nexmon-patches/verify-ucode-fullrx.sh" "$FW"
           fi
