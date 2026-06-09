@@ -7,6 +7,16 @@ name: Build nexmon firmware only (fast)
 # /vendor/firmware on the device; the kernel does not change between firmware
 # iterations.
 on:
+  # Auto-build the firmware on every firmware-patch commit to the dev branch
+  # (push triggers run from the pushed branch even before the workflow is on the
+  # default branch, unlike workflow_dispatch). This is the fast iteration path:
+  # no kernel, no manual dispatch -- just flash the published fw_bcmdhd.bin.
+  push:
+    branches:
+      - claude/nexus-6p-monitor-mode-7jgtf
+    paths:
+      - 'nexmon-patches/**'
+      - '.github/workflows/build-firmware-only.yml'
   workflow_dispatch:
     inputs:
       nexmon_ref:
