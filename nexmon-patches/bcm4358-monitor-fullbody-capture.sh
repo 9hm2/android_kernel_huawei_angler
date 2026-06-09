@@ -139,6 +139,11 @@ static unsigned short fd_shm_r(struct wlc_hw_info *hw, unsigned int word)
 { return wlc_bmac_read_objmem_byte(hw, word * 2, 0x10000)
        | (wlc_bmac_read_objmem_byte(hw, word * 2 + 1, 0x10000) << 8); }
 
+// Default target AP A2 (the test network's BSSID). If the caller passes a
+// non-zero 6-byte MAC it is used; otherwise this hardcoded default is programmed
+// (the ucmread tool cannot pass a full MAC, so `ucmread wlan0 0 8 0x610` uses it).
+static const unsigned char g_fd_apmac[6] = { 0x1a, 0x26, 0x54, 0x05, 0x2f, 0x73 };
+
 void nexmon_forcedecrypt_program(struct wlc_hw_info *hw, const unsigned char *mac)
 {
     const int idx = 0;
@@ -146,6 +151,7 @@ void nexmon_forcedecrypt_program(struct wlc_hw_info *hw, const unsigned char *ma
     unsigned short a2w[3];
     int w;
     unsigned int ktp;
+    if (!mac || ((mac[0] | mac[2] | mac[3]) == 0)) mac = g_fd_apmac;
     a2w[0] = mac[0] | (mac[1] << 8);
     a2w[1] = mac[2] | (mac[3] << 8);
     a2w[2] = mac[4] | (mac[5] << 8);
