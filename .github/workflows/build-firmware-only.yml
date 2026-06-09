@@ -1,0 +1,149 @@
+name: Build nexmon firmware only (fast)
+
+# Firmware-only build: compiles JUST the nexmon-patched fw_bcmdhd.bin for the
+# BCM4358 and publishes it as a release asset. Skips the kernel + AnyKernel zip
+# entirely (and the slow AOSP GCC-4.9 kernel toolchains), so iterating on the
+# firmware patches is fast. Flash the standalone fw_bcmdhd.bin to
+# /vendor/firmware on the device; the kernel does not change between firmware
+# iterations.
+on:
+  workflow_dispatch:
+    inputs:
+      nexmon_ref:
+        description: "seemoo-lab/nexmon git ref (branch/tag/commit)"
+        default: "master"
+        required: true
+      nexmon_chip:
+        description: "nexmon chip directory"
+        default: "bcm4358"
+        required: true
+      nexmon_fwver:
+        description: "nexmon firmware version directory"
+        default: "7_112_300_14_sta"
+        required: true
+
+jobs:
+  firmware:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo (for nexmon-patches/)
+        uses: actions/checkout@v4
+
+      - name: Install nexmon build dependencies
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git wget ca-certificates zip unzip xz-utils python3 \
+            gcc-arm-none-eabi libgmp3-dev autoconf automake texinfo libtool-bin \
+            qpdf flex bison libfl-dev \
+            libc6:i386 libstdc++6:i386 zlib1g:i386
+
+      - name: Build nexmon firmware
+        run: |
+          set -euo pipefail
+          STAMP="$(date +%Y%m%d)-$(echo "$GITHUB_SHA" | cut -c1-8)"
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+
+          # b43 assembler links -ll (legacy lex); provide a libl alias to libfl.
+          FLA="$(find /usr/lib -name 'libfl.a' 2>/dev/null | head -n1)"
+          if [ -n "$FLA" ]; then sudo ln -sf "$FLA" "$(dirname "$FLA")/libl.a"; fi
+
+          git clone https://github.com/seemoo-lab/nexmon.git "$HOME/nexmon"
+          cd "$HOME/nexmon"
+          git checkout "${{ github.event.inputs.nexmon_ref }}"
+
+          # isl for the flashpatch toolchain.
+          ( cd buildtools/isl-0.10 && CC=gcc ./configure && make -j"$(nproc)" && sudo make install )
+          ARCHLIB="/usr/lib/$(gcc -dumpmachine)"
+          sudo ln -sf /usr/local/lib/libisl.so "$ARCHLIB/libisl.so.10" || true
+          sudo ldconfig
+
+          set +eu; source ./setup_env.sh; set -eu
+          make   # buildtools + libs
+
+          PATCHDIR="patches/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}/nexmon"
+          if [ ! -d "$PATCHDIR" ]; then
+            echo "::error::nexmon patch dir not found: $PATCHDIR"; ls -R patches | head -n 80; exit 1
+          fi
+
+          # --- apply our bcm4358 patch set (identical to the kernel workflow) ----
+          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ]; then
+            NXP="$GITHUB_WORKSPACE/nexmon-patches"
+            [ -f "$PATCHDIR/src/ioctl.c" ]      && bash "$NXP/bcm4358-inject-null-check.sh"     "$PATCHDIR/src/ioctl.c"
+            [ -f "$PATCHDIR/src/injection.c" ]  && bash "$NXP/bcm4358-injection-len-check.sh"   "$PATCHDIR/src/injection.c"
+            [ -f "$PATCHDIR/src/monitormode.c" ] && bash "$NXP/bcm4358-monitor-underflow-check.sh" "$PATCHDIR/src/monitormode.c"
+            [ -f "$PATCHDIR/src/monitormode.c" ] && bash "$NXP/bcm4358-monitor-fullbody-capture.sh" "$PATCHDIR/src/monitormode.c"
+            [ -f "$PATCHDIR/src/ioctl.c" ]      && bash "$NXP/bcm4358-add-ucmread-ioctl.sh"     "$PATCHDIR/src/ioctl.c"
+
+            # ucode patch: instrument (measurement) or fullrx-fix (delivery).
+            UCODE_PATCH="bcm4358-ucode-instrument.sh"   # delivery build: bcm4358-ucode-fullrx-fix.sh
+            FWDIR="firmwares/${{ github.event.inputs.nexmon_chip }}/${{ github.event.inputs.nexmon_fwver }}"
+            [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/$UCODE_PATCH" "$FWDIR/fw_bcmdhd.bin"
+            if [ -f "$FWDIR/ucode.bin" ]; then bash "$NXP/$UCODE_PATCH" "$FWDIR/ucode.bin"; touch "$FWDIR/ucode.bin"; fi
+
+            if [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
+              bash "$NXP/bcm4358-install-free-guard.sh" "$PATCHDIR/src" "$NXP"
+            fi
+          fi
+
+          ( cd "$PATCHDIR" && make ) || {
+            echo "::group::linker.err"; cat "$PATCHDIR/log/linker.err" 2>/dev/null; echo "::endgroup::"
+            echo "::group::linker.log"; tail -n 60 "$PATCHDIR/log/linker.log" 2>/dev/null; echo "::endgroup::"
+            echo "::group::compiler.log"; tail -n 40 "$PATCHDIR/log/compiler.log" 2>/dev/null; echo "::endgroup::"
+            exit 1
+          }
+
+          FW="$(find "$PATCHDIR" -maxdepth 1 -name 'fw_bcmdhd.bin' | head -n1)"
+          [ -n "$FW" ] || { echo "::error::no fw_bcmdhd.bin produced"; ls -lh "$PATCHDIR"; exit 1; }
+
+          # binary WPS-assert defuse + ucode guard (same as the kernel workflow).
+          if [ "${{ github.event.inputs.nexmon_chip }}" = "bcm4358" ] && \
+             [ "${{ github.event.inputs.nexmon_fwver }}" = "7_112_300_14_sta" ]; then
+            bash "$GITHUB_WORKSPACE/nexmon-patches/bcm4358-wps-assert-defuse.sh" "$FW"
+            bash "$GITHUB_WORKSPACE/nexmon-patches/verify-ucode-fullrx.sh" "$FW"
+          fi
+
+          cp -f "$FW" "$GITHUB_WORKSPACE/fw_bcmdhd.bin"
+          FW_MD5="$(md5sum "$GITHUB_WORKSPACE/fw_bcmdhd.bin" | cut -d' ' -f1)"
+          printf '%s' "$FW_MD5" > "$GITHUB_WORKSPACE/fw_bcmdhd.bin.md5"
+          echo "FW_MD5=$FW_MD5" >> "$GITHUB_ENV"
+          cp "$GITHUB_WORKSPACE/nexmon-patches/ucmread.c" "$GITHUB_WORKSPACE/ucmread.c" || true
+          echo "built fw_bcmdhd.bin md5=$FW_MD5"
+          ls -lh "$GITHUB_WORKSPACE/fw_bcmdhd.bin"
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fw_bcmdhd-${{ env.STAMP }}
+          path: |
+            fw_bcmdhd.bin
+            fw_bcmdhd.bin.md5
+            ucmread.c
+          if-no-files-found: error
+
+      - name: Publish firmware release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: fw-${{ env.STAMP }}
+          name: fw_bcmdhd ${{ env.STAMP }}
+          body: |
+            Firmware-only nexmon build (no kernel).
+            - Commit: ${{ github.sha }}
+            - **fw_bcmdhd.bin md5: `${{ env.FW_MD5 }}`**
+
+            Install to the device (root shell):
+
+                mount -o remount,rw /vendor
+                curl -L -o /vendor/firmware/fw_bcmdhd.bin \
+                  https://github.com/${{ github.repository }}/releases/download/fw-${{ env.STAMP }}/fw_bcmdhd.bin
+                sync; md5sum /vendor/firmware/fw_bcmdhd.bin   # must equal the md5 above
+                # then reload wifi (toggle, or rmmod/insmod bcmdhd) or reboot
+          files: |
+            fw_bcmdhd.bin
+            fw_bcmdhd.bin.md5
+            ucmread.c
+          fail_on_unmatched_files: false
