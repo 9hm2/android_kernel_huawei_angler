@@ -121,20 +121,48 @@ unsigned char *nexmon_eapol_shm_ptr(void)   { return g_eapol_shm; }
 
 ///////////////////////////////////////////////////////////////////////////////
 // FORCE-DECRYPT key-table programming (called from ioctl 0x610).
-// Program AMT slot 0 = the foreign AP's A2, a per-station descriptor with stored
-// TA = A2, algo=WEP1/keyidx=0, and a fixed WEP key into key slot 0 -- so the
-// force-decrypt ucode patch routes the AP's unprotected EAPOL through WEP-decrypt.
+// Programs a per-station descriptor (stored TA = the foreign AP's A2), algo=WEP1/
+// keyidx=0, and a fixed WEP key into key slot 0 -- so the force-decrypt ucode patch
+// (0B1E reroute, `je r33,0x0`) routes the AP's unprotected EAPOL through WEP-decrypt.
 // The fixed key below is what the host XORs back with (RC4(aa aa 03 || key)).
-extern void wlc_bmac_write_objmem32(struct wlc_hw_info *wlc_hw, unsigned int offset,
-                                    unsigned int value, int sel);
+//
+// CRASH FIX (was: ioctl 0x610 -> wlan0 ENODEV / d11 trap). Two bugs were fixed:
+//  (1) The d11 MAC was RUNNING during the SHM/table writes. Broadcom requires the
+//      MAC suspended (MCTL_EN_MAC cleared + core forced awake) before any SHM/AMT/
+//      descriptor write; touching them under a live RXE traps the PSM -> ENODEV.
+//      We now bracket ALL writes in wlc_suspend_mac_and_wait()/wlc_enable_mac()
+//      (bcm4358 @0x3085C/@0x29F50; both take wlc; depth-counted, the same protocol
+//      the stock fw uses around every key/SHM update).
+//  (2) The old raw AMT IHR pokes (AMT_Table_Addr=(idx<<2)|w ...) used the wrong AC
+//      AMT write protocol and were a second crash/RXE-wedge vector. They are DROPPED.
+//      Slot 0 is used to match the shipped ucode `je r33,0x0`: an unmatched
+//      unprotected frame yields AMT match index 0, so the ucode descriptor lookup
+//      (0B27/0B28: spr065 = 0x334 + match_index) reads descriptor slot 0 -- and the
+//      stored-TA compare (0B71/0B72: frame Addr2 vs descriptor [0x02/0x03,off5])
+//      then restricts the force-decrypt to THIS AP's A2 by frame content, so slot 0
+//      does NOT force-decrypt every frame.  No AMT register write is needed.
+//
+// Also: fd_shm_w now uses byte-precise wlc_bmac_write_objmem_byte. The previous
+// wlc_bmac_write_objmem32 masks the byte offset to an 8-byte boundary and only ever
+// writes the LOW 32 bits of the qword, so it both clobbered the adjacent SHM word
+// AND mis-targeted odd words (e.g. word 0x336 landed on 0x334) -- the descriptor TA
+// never actually programmed. Two byte writes per 16-bit word land exactly.
+extern void wlc_bmac_write_objmem_byte(struct wlc_hw_info *wlc_hw, unsigned int offset,
+                                       unsigned char value, int sel);
+extern void wlc_suspend_mac_and_wait(struct wlc_info *wlc);   // bcm4358 @0x3085C
+extern void wlc_enable_mac(struct wlc_info *wlc);             // bcm4358 @0x29F50
 
 static const unsigned char g_fd_wepkey[13] = {
     0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d
 };
 unsigned char *nexmon_fd_wepkey_ptr(void) { return (unsigned char *) g_fd_wepkey; }
 
+// byte-precise SHM word write/read (SHM word W <-> byte offset W*2, LE16).
 static void fd_shm_w(struct wlc_hw_info *hw, unsigned int word, unsigned short v)
-{ wlc_bmac_write_objmem32(hw, word * 2, v, 0x10000); }
+{
+    wlc_bmac_write_objmem_byte(hw, word * 2,     (unsigned char)(v & 0xff), 0x10000);
+    wlc_bmac_write_objmem_byte(hw, word * 2 + 1, (unsigned char)(v >> 8),   0x10000);
+}
 static unsigned short fd_shm_r(struct wlc_hw_info *hw, unsigned int word)
 { return wlc_bmac_read_objmem_byte(hw, word * 2, 0x10000)
        | (wlc_bmac_read_objmem_byte(hw, word * 2 + 1, 0x10000) << 8); }
@@ -144,36 +172,52 @@ static unsigned short fd_shm_r(struct wlc_hw_info *hw, unsigned int word)
 // (the ucmread tool cannot pass a full MAC, so `ucmread wlan0 0 8 0x610` uses it).
 static const unsigned char g_fd_apmac[6] = { 0x1a, 0x26, 0x54, 0x05, 0x2f, 0x73 };
 
-void nexmon_forcedecrypt_program(struct wlc_hw_info *hw, const unsigned char *mac)
+// programming read-back result (read via ioctl 0x611). bit0=desc TA hi, bit1=desc
+// TA lo, bit2=keyidx/algo, bit3=key word0, bit4=nrrxtrans; 0x1F=all OK, 0xFFFF=not run.
+static volatile unsigned short g_fd_verify = 0xffff;
+unsigned short nexmon_fd_verify(void) { return g_fd_verify; }
+
+void nexmon_forcedecrypt_program(struct wlc_info *wlc, const unsigned char *mac)
 {
-    const int idx = 0;
-    volatile struct d11regs *regs = hw->regs;
+    struct wlc_hw_info *hw = wlc->hw;
+    const unsigned int idx = 0;            // slot 0: matches the ucode `je r33,0x0`
     unsigned short a2w[3];
-    int w;
     unsigned int ktp;
+    unsigned short v;
+    int w;
     if (!mac || ((mac[0] | mac[2] | mac[3]) == 0)) mac = g_fd_apmac;
     a2w[0] = mac[0] | (mac[1] << 8);
     a2w[1] = mac[2] | (mac[3] << 8);
     a2w[2] = mac[4] | (mac[5] << 8);
-    // 1. AMT slot 0 <- AP A2 (so the Addr2 match returns index 0)
-    for (w = 0; w < 3; w++) {
-        regs->u.d11acregs.AMT_Table_Addr = (idx << 2) | w;
-        regs->u.d11acregs.AMT_Table_Data = a2w[w];
-    }
-    regs->u.d11acregs.AMT_Table_Addr = (idx << 2) | 3;
-    regs->u.d11acregs.AMT_Table_Val  = 0x0001;
-    if (fd_shm_r(hw, 0x03E) <= (unsigned) idx) fd_shm_w(hw, 0x03E, idx + 1);
-    // 2. per-station descriptor: validate word0=0, stored TA = A2
+
+    // ===== enter the suspend window: RXE stopped, core forced awake (crash fix) =====
+    wlc_suspend_mac_and_wait(wlc);
+
+    // per-station-descriptor scan count must cover our slot
+    if (fd_shm_r(hw, 0x03E) <= idx) fd_shm_w(hw, 0x03E, idx + 1);
+    // per-station descriptor: validate word0 (bit3=0), stored TA = A2 (0B71/0B72 gate)
     fd_shm_w(hw, 0x334 + idx + 0x00, 0x0000);
     fd_shm_w(hw, 0x334 + idx + 0x02, a2w[0]);
     fd_shm_w(hw, 0x334 + idx + 0x03, a2w[1]);
-    // 3. keyidx/algo word: algo=WEP1(1), keyidx=0
+    // keyidx/algo word: algo=WEP1(1), keyidx=0
     fd_shm_w(hw, 0x2F0 + idx, 0x0001);
-    // 4. key material into KTP key slot 0 (8 words = 16 bytes; key repeated to fill)
+    // key material into KTP key slot 0 (8 words = 16 bytes; key repeated to fill)
     ktp = fd_shm_r(hw, 0x2B);
     for (w = 0; w < 8; w++)
         fd_shm_w(hw, ktp + w,
                  (unsigned short)(g_fd_wepkey[(2 * w) % 13] | (g_fd_wepkey[(2 * w + 1) % 13] << 8)));
+
+    // read-back verification (still inside the suspend window; SHM quiescent)
+    g_fd_verify = 0;
+    if (fd_shm_r(hw, 0x334 + idx + 0x02) == a2w[0]) g_fd_verify |= 1 << 0;
+    if (fd_shm_r(hw, 0x334 + idx + 0x03) == a2w[1]) g_fd_verify |= 1 << 1;
+    if (fd_shm_r(hw, 0x2F0 + idx) == 0x0001)        g_fd_verify |= 1 << 2;
+    v = (unsigned short)(g_fd_wepkey[0] | (g_fd_wepkey[1] << 8));
+    if (fd_shm_r(hw, ktp + 0) == v)                 g_fd_verify |= 1 << 3;
+    if (fd_shm_r(hw, 0x03E) > idx)                  g_fd_verify |= 1 << 4;
+
+    // ===== leave the suspend window: MAC running again =====
+    wlc_enable_mac(wlc);
 }
 
 __attribute__((naked)) void
