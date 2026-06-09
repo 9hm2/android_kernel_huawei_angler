@@ -59,7 +59,7 @@ static volatile unsigned short g_diagB_n = 0;
 static volatile unsigned short g_diagB_maxlen = 0;
 static unsigned char g_eapol_diag[256]  = { 0 };   // bucket A: EAPOL
 static unsigned char g_eapol_diag2[256] = { 0 };   // bucket B: largest DATA
-static unsigned char g_eapol_shm[256]   = { 0 };   // SHM stamp snapshot at the EAPOL moment
+static unsigned char g_eapol_shm[1024]  = { 0 };   // template/internal-RAM frame dump at the EAPOL moment
 
 // read live d11 SHM (objmem select 0x10000) -- the proven path; lets us correlate
 // the EAPOL frame with the ucode 0B95 stamps captured at the SAME instant.
@@ -95,28 +95,17 @@ wlc_recvdata_fullbody_monitor(struct wlc_info *wlc, unsigned char *rxhdr, struct
 
     if (is_eapol) {
         void *wlc_hw = wlc->hw;
-        unsigned int spr1e2, base;
         if (g_diagA_n < 0xffff) g_diagA_n++;
         diag_fill(g_eapol_diag, g_diagA_n, rxhdr, frame, plen);
-        // The full plaintext body (Nonce+MIC) is resident in the d11 receive-FIFO
-        // SRAM at spr1e2+k; sel 0/0x10000 are the wrong objects. Stamp gave spr1e2
-        // at SHM [0x208]=byte 0x410. At the EAPOL moment, dump the body window
-        // (spr1e2+24..+71: LLC 88 8e, 802.1X hdr, EAPOL-Key descriptor + start of
-        // the Nonce) from candidate selects -- the one showing non-zero body bytes
-        // there is the recovery object.
-        for (i = 0; i < 64; i++)
-            g_eapol_shm[i] = wlc_bmac_read_objmem_byte(wlc_hw, 0x400 + i, 0x10000);
-        spr1e2 = g_eapol_shm[16] | (g_eapol_shm[17] << 8);
-        base = spr1e2 + 24;
-        // 5 candidate selects x 38 bytes from spr1e2+24, into [66..255]
-        for (i = 0; i < 38; i++) {
-            g_eapol_shm[ 66 + i] = wlc_bmac_read_objmem_byte(wlc_hw, base + i, 0x20000);
-            g_eapol_shm[104 + i] = wlc_bmac_read_objmem_byte(wlc_hw, base + i, 0x30000);
-            g_eapol_shm[142 + i] = wlc_bmac_read_objmem_byte(wlc_hw, base + i, 0x40000);
-            g_eapol_shm[180 + i] = wlc_bmac_read_objmem_byte(wlc_hw, base + i, 0x50000);
-            g_eapol_shm[218 + i] = wlc_bmac_read_objmem_byte(wlc_hw, base + i, 0x60000);
-        }
-        g_eapol_shm[64] = spr1e2; g_eapol_shm[65] = spr1e2 >> 8;
+        // Frames ARE staged FULL in the template/internal RAM (objaddr base 0x14000
+        // = objmem sel 0x10000, byte offset 0x10000+). A manual scan found the AP
+        // beacon and deauth there complete. DECISIVE: at the EAPOL moment dump that
+        // frame-staging region (offset 0x10C00..0x10FFF -> objaddr 0x14300..0x143FF)
+        // and check whether THIS plaintext EAPOL has a full body (non-zero Nonce
+        // after aa-aa-03-00-00-00-88-8e) or only the truncated header. Read back
+        // chunked via cmd 0x606 (offset-aware): offsets 0,256,512,768.
+        for (i = 0; i < 1024; i++)
+            g_eapol_shm[i] = wlc_bmac_read_objmem_byte(wlc_hw, 0x10C00 + i, 0x10000);
     }
 
     // bucket B: keep the LARGEST data frame seen (a full-delivery sample to diff)
