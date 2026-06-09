@@ -96,7 +96,7 @@ jobs:
             [ -f "$PATCHDIR/src/ioctl.c" ]      && bash "$NXP/bcm4358-add-ucmread-ioctl.sh"     "$PATCHDIR/src/ioctl.c"
 
             # ucode patch: instrument (measurement) or fullrx-fix (delivery).
-            UCODE_PATCH="bcm4358-ucode-instrument.sh"   # delivery build: bcm4358-ucode-fullrx-fix.sh
+            UCODE_PATCH="bcm4358-ucode-forcedecrypt.sh"   # measurement: bcm4358-ucode-instrument.sh
             FWDIR="firmwares/$NEXMON_CHIP/$NEXMON_FWVER"
             [ -f "$FWDIR/fw_bcmdhd.bin" ] && bash "$NXP/$UCODE_PATCH" "$FWDIR/fw_bcmdhd.bin"
             if [ -f "$FWDIR/ucode.bin" ]; then bash "$NXP/$UCODE_PATCH" "$FWDIR/ucode.bin"; touch "$FWDIR/ucode.bin"; fi

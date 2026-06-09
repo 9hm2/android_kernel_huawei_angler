@@ -86,26 +86,25 @@ wlc_recvdata_fullbody_monitor(struct wlc_info *wlc, unsigned char *rxhdr, struct
     int is_eapol = 0;
     int is_data  = ((frame[0] & 0x0c) == 0x08);        // FC type == data (note: +6 prefix present)
 
-    // identify EAPOL by the FULL LLC/SNAP signature aa-aa-03-00-00-00-88-8e
-    // (matching only 88 8e false-positives on MAC addresses ending in 88:8e)
-    for (i = 0; i + 7 < 56 && i + 7 < plen; i++)
+    // identify EAPOL/SNAP by aa-aa-03-00: the full LLC (aa aa 03 00 00 00 88 8e)
+    // for normal frames, but only the first 4 bytes (the WEP IV aa aa 03 + keyidx
+    // 00) survive a FORCE-DECRYPT (bytes 4+ incl 88 8e are XOR'd) -- so match the
+    // 4-byte verbatim IV to also catch force-decrypted EAPOLs.
+    for (i = 0; i + 3 < 56 && i + 3 < plen; i++)
         if (frame[i] == 0xaa && frame[i+1] == 0xaa && frame[i+2] == 0x03 &&
-            frame[i+3] == 0x00 && frame[i+4] == 0x00 && frame[i+5] == 0x00 &&
-            frame[i+6] == 0x88 && frame[i+7] == 0x8e) { is_eapol = 1; break; }
+            frame[i+3] == 0x00) { is_eapol = 1; break; }
 
     if (is_eapol) {
-        void *wlc_hw = wlc->hw;
+        // bucket A = this frame's p->data. With the force-decrypt patch active and
+        // a WEP key programmed (ioctl 0x610) for the AP, an unprotected EAPOL is
+        // routed through WEP-decrypt: the body host-DMA (0CE3) fills p->data with
+        // the XOR'd body BEFORE the firmware's 0x310/DECERR drop at 0x1a6cfc (which
+        // is exactly where this hook sits). So p->data here holds [MAC hdr][aa aa
+        // 03 00 verbatim][XOR(00 00 88 8e | 802.1X | EAPOL-Key body)]. Read via cmd
+        // 0x601 and XOR-back on the host with RC4(aa aa 03 || wepkey) to recover
+        // the plaintext Nonce+MIC.
         if (g_diagA_n < 0xffff) g_diagA_n++;
         diag_fill(g_eapol_diag, g_diagA_n, rxhdr, frame, plen);
-        // Frames ARE staged FULL in the template/internal RAM (objaddr base 0x14000
-        // = objmem sel 0x10000, byte offset 0x10000+). A manual scan found the AP
-        // beacon and deauth there complete. DECISIVE: at the EAPOL moment dump that
-        // frame-staging region (offset 0x10C00..0x10FFF -> objaddr 0x14300..0x143FF)
-        // and check whether THIS plaintext EAPOL has a full body (non-zero Nonce
-        // after aa-aa-03-00-00-00-88-8e) or only the truncated header. Read back
-        // chunked via cmd 0x606 (offset-aware): offsets 0,256,512,768.
-        for (i = 0; i < 1024; i++)
-            g_eapol_shm[i] = wlc_bmac_read_objmem_byte(wlc_hw, 0x10C00 + i, 0x10000);
     }
 
     // bucket B: keep the LARGEST data frame seen (a full-delivery sample to diff)
@@ -119,6 +118,57 @@ wlc_recvdata_fullbody_monitor(struct wlc_info *wlc, unsigned char *rxhdr, struct
 unsigned char *nexmon_eapol_diag_ptr(void)  { return g_eapol_diag; }
 unsigned char *nexmon_eapol_diag2_ptr(void) { return g_eapol_diag2; }
 unsigned char *nexmon_eapol_shm_ptr(void)   { return g_eapol_shm; }
+
+///////////////////////////////////////////////////////////////////////////////
+// FORCE-DECRYPT key-table programming (called from ioctl 0x610).
+// Program AMT slot 0 = the foreign AP's A2, a per-station descriptor with stored
+// TA = A2, algo=WEP1/keyidx=0, and a fixed WEP key into key slot 0 -- so the
+// force-decrypt ucode patch routes the AP's unprotected EAPOL through WEP-decrypt.
+// The fixed key below is what the host XORs back with (RC4(aa aa 03 || key)).
+extern void wlc_bmac_write_objmem32(struct wlc_hw_info *wlc_hw, unsigned int offset,
+                                    unsigned int value, int sel);
+
+static const unsigned char g_fd_wepkey[13] = {
+    0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d
+};
+unsigned char *nexmon_fd_wepkey_ptr(void) { return (unsigned char *) g_fd_wepkey; }
+
+static void fd_shm_w(struct wlc_hw_info *hw, unsigned int word, unsigned short v)
+{ wlc_bmac_write_objmem32(hw, word * 2, v, 0x10000); }
+static unsigned short fd_shm_r(struct wlc_hw_info *hw, unsigned int word)
+{ return wlc_bmac_read_objmem_byte(hw, word * 2, 0x10000)
+       | (wlc_bmac_read_objmem_byte(hw, word * 2 + 1, 0x10000) << 8); }
+
+void nexmon_forcedecrypt_program(struct wlc_hw_info *hw, const unsigned char *mac)
+{
+    const int idx = 0;
+    volatile struct d11regs *regs = hw->regs;
+    unsigned short a2w[3];
+    int w;
+    unsigned int ktp;
+    a2w[0] = mac[0] | (mac[1] << 8);
+    a2w[1] = mac[2] | (mac[3] << 8);
+    a2w[2] = mac[4] | (mac[5] << 8);
+    // 1. AMT slot 0 <- AP A2 (so the Addr2 match returns index 0)
+    for (w = 0; w < 3; w++) {
+        regs->u.d11acregs.AMT_Table_Addr = (idx << 2) | w;
+        regs->u.d11acregs.AMT_Table_Data = a2w[w];
+    }
+    regs->u.d11acregs.AMT_Table_Addr = (idx << 2) | 3;
+    regs->u.d11acregs.AMT_Table_Val  = 0x0001;
+    if (fd_shm_r(hw, 0x03E) <= (unsigned) idx) fd_shm_w(hw, 0x03E, idx + 1);
+    // 2. per-station descriptor: validate word0=0, stored TA = A2
+    fd_shm_w(hw, 0x334 + idx + 0x00, 0x0000);
+    fd_shm_w(hw, 0x334 + idx + 0x02, a2w[0]);
+    fd_shm_w(hw, 0x334 + idx + 0x03, a2w[1]);
+    // 3. keyidx/algo word: algo=WEP1(1), keyidx=0
+    fd_shm_w(hw, 0x2F0 + idx, 0x0001);
+    // 4. key material into KTP key slot 0 (8 words = 16 bytes; key repeated to fill)
+    ktp = fd_shm_r(hw, 0x2B);
+    for (w = 0; w < 8; w++)
+        fd_shm_w(hw, ktp + w,
+                 (unsigned short)(g_fd_wepkey[(2 * w) % 13] | (g_fd_wepkey[(2 * w + 1) % 13] << 8)));
+}
 
 __attribute__((naked)) void
 wlc_recvdata_fullbody_monitor_trampoline(void)
