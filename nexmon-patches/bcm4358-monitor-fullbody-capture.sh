@@ -149,8 +149,9 @@ unsigned char *nexmon_eapol_shm_ptr(void)   { return g_eapol_shm; }
 // never actually programmed. Two byte writes per 16-bit word land exactly.
 extern void wlc_bmac_write_objmem_byte(struct wlc_hw_info *wlc_hw, unsigned int offset,
                                        unsigned char value, int sel);
-extern void wlc_suspend_mac_and_wait(struct wlc_info *wlc);   // bcm4358 @0x3085C
-extern void wlc_enable_mac(struct wlc_info *wlc);             // bcm4358 @0x29F50
+// wlc_suspend_mac_and_wait(@0x3085C) / wlc_enable_mac(@0x29F50) are already declared
+// by nexmon's wrapper.h (as void*-taking wrappers); do NOT re-declare them here or the
+// signatures conflict. We call them with `wlc` (struct wlc_info* -> void* is fine).
 
 static const unsigned char g_fd_wepkey[13] = {
     0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d
