@@ -95,14 +95,28 @@ wlc_recvdata_fullbody_monitor(struct wlc_info *wlc, unsigned char *rxhdr, struct
 
     if (is_eapol) {
         void *wlc_hw = wlc->hw;
+        unsigned int spr1e2, base;
         if (g_diagA_n < 0xffff) g_diagA_n++;
         diag_fill(g_eapol_diag, g_diagA_n, rxhdr, frame, plen);
-        // correlated SHM stamp snapshot AT the EAPOL moment: the 102F finalizer
-        // stamps (host bytes 0x400..0x41F) hold THIS EAPOL's spr1f5 (host write
-        // length) etc. spr1f5 is at [0x209] = byte 0x412 = shm[18..19]; if it is
-        // 0x13 (lookahead) the body was never written. Read via cmd 0x606.
+        // The full plaintext body (Nonce+MIC) is resident in the d11 receive-FIFO
+        // SRAM at spr1e2+k; sel 0/0x10000 are the wrong objects. Stamp gave spr1e2
+        // at SHM [0x208]=byte 0x410. At the EAPOL moment, dump the body window
+        // (spr1e2+24..+71: LLC 88 8e, 802.1X hdr, EAPOL-Key descriptor + start of
+        // the Nonce) from candidate selects -- the one showing non-zero body bytes
+        // there is the recovery object.
         for (i = 0; i < 64; i++)
             g_eapol_shm[i] = wlc_bmac_read_objmem_byte(wlc_hw, 0x400 + i, 0x10000);
+        spr1e2 = g_eapol_shm[16] | (g_eapol_shm[17] << 8);
+        base = spr1e2 + 24;
+        // 5 candidate selects x 38 bytes from spr1e2+24, into [66..255]
+        for (i = 0; i < 38; i++) {
+            g_eapol_shm[ 66 + i] = wlc_bmac_read_objmem_byte(wlc_hw, base + i, 0x20000);
+            g_eapol_shm[104 + i] = wlc_bmac_read_objmem_byte(wlc_hw, base + i, 0x30000);
+            g_eapol_shm[142 + i] = wlc_bmac_read_objmem_byte(wlc_hw, base + i, 0x40000);
+            g_eapol_shm[180 + i] = wlc_bmac_read_objmem_byte(wlc_hw, base + i, 0x50000);
+            g_eapol_shm[218 + i] = wlc_bmac_read_objmem_byte(wlc_hw, base + i, 0x60000);
+        }
+        g_eapol_shm[64] = spr1e2; g_eapol_shm[65] = spr1e2 >> 8;
     }
 
     // bucket B: keep the LARGEST data frame seen (a full-delivery sample to diff)
